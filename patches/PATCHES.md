@@ -52,6 +52,12 @@ hand; the patch is small and each hunk is documented in
 - `user_profile.cpp`: swallow filesystem exceptions when saving Xbox profile
   settings, which otherwise throw an uncaught exception and kill the guest when
   advancing past the main menu on Android.
+- **Custom renderer (Windows):** a Lanczos2 guest-output upscale shader
+  (`host/shaders/bytecode/d3d12_5_1/guest_output_lanczos_ps.h`, source under
+  `renderer/shaders/`) replaces bilinear upscaling. `presenter.h` adds
+  `GuestOutputPaintEffect::kLanczos` and a live `present_upscale` setting;
+  `d3d12_presenter.*` builds the pipeline; `presenter.cpp` selects it from the
+  setting each frame. Toggle live with no restart via F4 settings or F2 hotkey.
 - Various CMake/platform files: Android surface support, `log` linkage, NDEBUG
   for the SPIR-V target.
 

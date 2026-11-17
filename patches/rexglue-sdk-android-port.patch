@@ -557,24 +557,6 @@ index 9d7c19b..b90c4d0 100644
  
  if (REXGLUE_GPU_D3D12)
    rexgpu_xenos_library(
-diff --git a/src/gpu/xenos/d3d12/command_processor.cpp b/src/gpu/xenos/d3d12/command_processor.cpp
-index 4dd76dd..022039b 100644
---- a/src/gpu/xenos/d3d12/command_processor.cpp
-+++ b/src/gpu/xenos/d3d12/command_processor.cpp
-@@ -857,9 +857,11 @@ bool D3D12CommandProcessor::SetupContext() {
-                              provider.GetResourceBindingTier() >= D3D12_RESOURCE_BINDING_TIER_2;
- 
-   u32 draw_resolution_scale_x, draw_resolution_scale_y;
-+  u32 requested_scale_x = GetGraphicsDriver().GetResolutionScaleX();
-+  u32 requested_scale_y = GetGraphicsDriver().GetResolutionScaleY();
-+  REXGPU_INFO("BS1: requested draw resolution scale = {}x{}", requested_scale_x, requested_scale_y);
-   bool draw_resolution_scale_not_clamped = TextureCache::GetConfigDrawResolutionScale(
--      GetGraphicsDriver().GetResolutionScaleX(), GetGraphicsDriver().GetResolutionScaleY(),
--      draw_resolution_scale_x, draw_resolution_scale_y);
-+      requested_scale_x, requested_scale_y, draw_resolution_scale_x, draw_resolution_scale_y);
-   if (!D3D12TextureCache::ClampDrawResolutionScaleToMaxSupported(
-           draw_resolution_scale_x, draw_resolution_scale_y, provider)) {
-     draw_resolution_scale_not_clamped = false;
 diff --git a/src/gpu/xenos/d3d12/texture_cache.h b/src/gpu/xenos/d3d12/texture_cache.h
 index cb35482..ebfa79d 100644
 --- a/src/gpu/xenos/d3d12/texture_cache.h
@@ -622,6 +604,50 @@ index 5315018..1cfaa3c 100644
    }
  
    ~D3D12ImmediateDrawer();
+diff --git a/src/gpu/xenos/host/d3d12/d3d12_presenter.cpp b/src/gpu/xenos/host/d3d12/d3d12_presenter.cpp
+index 5d8983c..61b4909 100644
+--- a/src/gpu/xenos/host/d3d12/d3d12_presenter.cpp
++++ b/src/gpu/xenos/host/d3d12/d3d12_presenter.cpp
+@@ -31,6 +31,7 @@ namespace rex::gpu::d3d12 {
+ namespace shaders {
+ #include "gpu/xenos/host/shaders/bytecode/d3d12_5_1/guest_output_bilinear_dither_ps.h"
+ #include "gpu/xenos/host/shaders/bytecode/d3d12_5_1/guest_output_bilinear_ps.h"
++#include "gpu/xenos/host/shaders/bytecode/d3d12_5_1/guest_output_lanczos_ps.h"
+ #include "gpu/xenos/host/shaders/bytecode/d3d12_5_1/guest_output_triangle_strip_rect_vs.h"
+ }  // namespace shaders
+ 
+@@ -664,6 +665,10 @@ bool D3D12Presenter::InitializeSurfaceIndependent() {
+         guest_output_paint_pipeline_desc.PS.BytecodeLength =
+             sizeof(shaders::kGuestOutputBilinearDitherPS);
+         break;
++      case GuestOutputPaintEffect::kLanczos:
++        guest_output_paint_pipeline_desc.PS.pShaderBytecode = shaders::kGuestOutputLanczosPS;
++        guest_output_paint_pipeline_desc.PS.BytecodeLength = sizeof(shaders::kGuestOutputLanczosPS);
++        break;
+       default:
+         continue;
+     }
+diff --git a/src/gpu/xenos/host/d3d12/d3d12_presenter.h b/src/gpu/xenos/host/d3d12/d3d12_presenter.h
+index f695379..15f224c 100644
+--- a/src/gpu/xenos/host/d3d12/d3d12_presenter.h
++++ b/src/gpu/xenos/host/d3d12/d3d12_presenter.h
+@@ -95,6 +95,8 @@ class D3D12Presenter final : public Presenter {
+ 
+   gpu::Surface::TypeFlags GetSupportedSurfaceTypes() const override;
+ 
++  bool SupportsLanczosUpscale() const override { return true; }
++
+   void AwaitUISubmissionCompletionFromUIThread(UINT64 submission_index) {
+     ui_submission_tracker_.AwaitSubmissionCompletion(submission_index);
+   }
+@@ -149,6 +151,7 @@ class D3D12Presenter final : public Presenter {
+     switch (effect) {
+       case GuestOutputPaintEffect::kBilinear:
+       case GuestOutputPaintEffect::kBilinearDither:
++      case GuestOutputPaintEffect::kLanczos:
+         return kGuestOutputPaintRootSignatureIndexBilinear;
+       default:
+         REX_UNHANDLED_CASE(effect);
 diff --git a/src/gpu/xenos/host/d3d12/d3d12_provider.cpp b/src/gpu/xenos/host/d3d12/d3d12_provider.cpp
 index d834fe7..f5e9082 100644
 --- a/src/gpu/xenos/host/d3d12/d3d12_provider.cpp
@@ -636,7 +662,7 @@ index d834fe7..f5e9082 100644
          if (adapter_index_wanted >= 0) {
            if (adapter_index == static_cast<u32>(adapter_index_wanted)) {
 diff --git a/src/gpu/xenos/host/presenter.cpp b/src/gpu/xenos/host/presenter.cpp
-index 939c8fd..ed260dc 100644
+index 939c8fd..a08e4e5 100644
 --- a/src/gpu/xenos/host/presenter.cpp
 +++ b/src/gpu/xenos/host/presenter.cpp
 @@ -9,6 +9,10 @@
@@ -650,7 +676,25 @@ index 939c8fd..ed260dc 100644
  #include <algorithm>
  #include <atomic>
  #include <cctype>
-@@ -263,6 +267,17 @@ bool Presenter::RefreshGuestOutput(
+@@ -34,6 +38,17 @@ GuestOutputPaintConfig BuildGuestOutputPaintConfig(const rex::gpu::XenosSettings
+   GuestOutputPaintConfig config;
+   config.SetAllowOverscanCutoff(settings.present_allow_overscan_cutoff.Get());
+   config.SetDither(settings.present_dither.Get());
++  config.SetUpscaleMode(settings.present_upscale.Get() == "lanczos"
++                            ? GuestOutputPaintConfig::UpscaleMode::kLanczos
++                            : GuestOutputPaintConfig::UpscaleMode::kBilinear);
++  {
++    static std::string last_upscale = "<unset>";
++    const std::string current = settings.present_upscale.Get();
++    if (current != last_upscale) {
++      last_upscale = current;
++      REXGPU_INFO("BS1-RENDERER present_upscale={} (live via F4 menu / F2 hotkey)", current.c_str());
++    }
++  }
+   return config;
+ }
+ 
+@@ -263,6 +278,17 @@ bool Presenter::RefreshGuestOutput(
    PaintResult paint_result = PaintResult::kNotPresented;
    {
      std::lock_guard<std::mutex> paint_mode_mutex_lock(paint_mode_mutex_);
@@ -668,6 +712,62 @@ index 939c8fd..ed260dc 100644
      switch (paint_mode_) {
        case PaintMode::kNone:
          break;
+@@ -524,7 +550,15 @@ Presenter::GuestOutputPaintFlow Presenter::GetGuestOutputPaintFlow(
+   flow.effect = GuestOutputPaintEffect::kBilinear;
+   flow.has_effect = true;
+ 
+-  if (config.GetDither()) {
++  // Custom renderer: use the sharp Lanczos2 upscale when the guest output is
++  // being scaled up (or when explicitly requested for 1:1). Live-toggleable
++  // via gpu.xenos.present_upscale, no restart or cache rebuild needed.
++  const bool is_upscaling = output_width > properties.frontbuffer_width ||
++                            output_height > properties.frontbuffer_height;
++  if (config.GetUpscaleMode() == GuestOutputPaintConfig::UpscaleMode::kLanczos && is_upscaling &&
++      SupportsLanczosUpscale()) {
++    flow.effect = GuestOutputPaintEffect::kLanczos;
++  } else if (config.GetDither()) {
+     if (!properties.is_8bpc || output_width != properties.frontbuffer_width ||
+         output_height != properties.frontbuffer_height) {
+       flow.effect = GuestOutputPaintEffect::kBilinearDither;
+diff --git a/src/gpu/xenos/host/presenter.h b/src/gpu/xenos/host/presenter.h
+index b747426..5e5b826 100644
+--- a/src/gpu/xenos/host/presenter.h
++++ b/src/gpu/xenos/host/presenter.h
+@@ -111,10 +111,16 @@ class REX_GPU_XENOS_API Presenter : public gpu::IPresenter {
+     bool GetDither() const { return dither_; }
+     void SetDither(bool new_dither) { dither_ = new_dither; }
+ 
++    /** Custom renderer upscale filter, live-selectable. */
++    enum class UpscaleMode : u8 { kBilinear, kLanczos };
++    UpscaleMode GetUpscaleMode() const { return upscale_mode_; }
++    void SetUpscaleMode(UpscaleMode mode) { upscale_mode_ = mode; }
++
+    private:
+     /** Tools must not allow overscan cutoff and must use the bilinear effect to match source. */
+     bool allow_overscan_cutoff_ = false;
+     bool dither_ = false;
++    UpscaleMode upscale_mode_ = UpscaleMode::kLanczos;
+   };
+ 
+   virtual ~Presenter();
+@@ -228,6 +234,7 @@ class REX_GPU_XENOS_API Presenter : public gpu::IPresenter {
+   enum class GuestOutputPaintEffect : u8 {
+     kBilinear,
+     kBilinearDither,
++    kLanczos,  // Custom sharp Lanczos2 upscale (live-toggleable)
+ 
+     kCount,
+   };
+@@ -301,6 +308,9 @@ class REX_GPU_XENOS_API Presenter : public gpu::IPresenter {
+    */
+   virtual void DriverDisconnectPaintingFromSurface() = 0;
+ 
++  /** Whether this host backend supports the sharp Lanczos guest-output upscale (D3D12 only). */
++  virtual bool SupportsLanczosUpscale() const { return false; }
++
+   /**
+    * Acquires the ready guest output image for a consumer.
+    *
 diff --git a/src/gpu/xenos/host/surface.cpp b/src/gpu/xenos/host/surface.cpp
 index e902a8a..b471e5b 100644
 --- a/src/gpu/xenos/host/surface.cpp
@@ -850,6 +950,20 @@ index 97d4eff..01a1d0c 100644
    if (swap_texture_view == VK_NULL_HANDLE) {
      REXGPU_ERROR("XELOG_GPU PRESENT: swap_texture_view=NULL");
      return;
+diff --git a/src/gpu/xenos/xenos_settings.h b/src/gpu/xenos/xenos_settings.h
+index d8f88a2..40ba191 100644
+--- a/src/gpu/xenos/xenos_settings.h
++++ b/src/gpu/xenos/xenos_settings.h
+@@ -35,6 +35,9 @@ class XenosSettings : public SettingOwner {
+               "Fake sample count for occlusion queries", Range{1, 100000});
+   REX_SETTING(bool, allow_invalid_fetch_constants, false, "Allow invalid fetch constants");
+   REX_SETTING(std::string, dump_shaders, "", "Path to dump shaders to");
++  // Custom renderer: guest-output upscale filter. Live (no restart).
++  REX_SETTING(std::string, present_upscale, "lanczos", "Guest output upscale filter",
++              Allowed("bilinear", "lanczos"));
+   REX_SETTING(std::string, swap_post_effect, "none", "Swap post effect",
+               Allowed("none", "fxaa", "fxaa_extreme"), kRestart);
+   REX_SETTING(bool, store_shaders, true,
 diff --git a/src/hid/sdl3/sdl3_input_driver.cpp b/src/hid/sdl3/sdl3_input_driver.cpp
 index 2ab6d1d..1ac9625 100644
 --- a/src/hid/sdl3/sdl3_input_driver.cpp

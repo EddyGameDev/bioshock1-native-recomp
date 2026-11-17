@@ -35,8 +35,12 @@ code:
   command processor → `VdSwap` → `vkQueuePresentKHR` path.
 - **Working on-screen controls (Android).** The touch overlay feeds a virtual
   gamepad into the runtime's input system, so START advances from the title to
-  the in-game main menu (NEW GAME / LOAD GAME / CREDITS). A/B/X/Y and the left
-  stick are wired the same way.
+  the in-game main menu (NEW GAME / LOAD GAME / CREDITS). A/B/X/Y and both
+  sticks (MOVE + LOOK) are wired the same way.
+- **Custom renderer upscale (Windows).** A Lanczos2 guest-output shader replaces
+  bilinear upscaling for a clear, sharp image. Toggle **live with no restart**
+  via the **F4 settings menu** (`gpu.xenos.present_upscale`) or the **F2**
+  hotkey. See [`docs/33-CUSTOM-RENDERER.md`](docs/33-CUSTOM-RENDERER.md).
 - **No game data in the APK.** The launcher asks you to import your own ISO;
   the XEX and full game tree are extracted at runtime into app-private storage.
   Nothing proprietary is committed or shipped.

@@ -28,6 +28,7 @@ class Bioshock1App : public rex::app::TitleApp {
       return;
     }
     bool previous_down = false;
+    bool previous_down_f2 = false;
     while (RunFrame()) {
 #if defined(_WIN32)
       const bool down = (GetAsyncKeyState(VK_F1) & 0x8000) != 0;
@@ -35,11 +36,28 @@ class Bioshock1App : public rex::app::TitleApp {
         CycleResolution();
       }
       previous_down = down;
+
+      // F2 toggles the guest-output upscale filter live, with no restart.
+      const bool down_f2 = (GetAsyncKeyState(VK_F2) & 0x8000) != 0;
+      if (down_f2 && !previous_down_f2) {
+        ToggleUpscale();
+      }
+      previous_down_f2 = down_f2;
 #endif
     }
   }
 
  private:
+  void ToggleUpscale() {
+    auto found = REX_SETTINGS().Find("gpu.xenos.present_upscale");
+    std::string current = "lanczos";
+    if (found) current = (*found)->GetText();
+    const char* next = current == "lanczos" ? "bilinear" : "lanczos";
+    (void)REX_SETTINGS().SetText(rex::SettingLayer::kRuntime, "gpu.xenos.present_upscale", next);
+    std::printf("[BS1] upscale -> %s (live, no restart)\n", next);
+    std::fflush(stdout);
+  }
+
   void CycleResolution() {
     int current = 1;
     auto found = REX_SETTINGS().Find("gpu.resolution_scale_x");
