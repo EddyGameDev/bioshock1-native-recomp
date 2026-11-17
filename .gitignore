@@ -38,6 +38,8 @@ _work/rexglue-android-app/build/
 !_work/rexglue-bioshock1/
 !_work/rexglue-bioshock1/**
 _work/rexglue-bioshock1/build/
+# Generated PPC->C++ output is reproducible from tools/pipeline.py codegen.
+_work/rexglue-bioshock1/generated/
 
 # Staged native libraries (built from source by the pipeline)
 *.so
