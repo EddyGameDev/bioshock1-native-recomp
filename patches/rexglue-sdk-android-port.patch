@@ -1053,6 +1053,47 @@ index 035393b..414f71e 100644
    if (void* hwnd = SDL_GetPointerProperty(props, SDL_PROP_WINDOW_WIN32_HWND_POINTER, nullptr)) {
      result.type = NativeWindow::Type::kWin32;
      result.window = hwnd;
+diff --git a/src/xam/user_profile.cpp b/src/xam/user_profile.cpp
+index 96c4454..8c7357d 100644
+--- a/src/xam/user_profile.cpp
++++ b/src/xam/user_profile.cpp
+@@ -9,6 +9,7 @@
+  * @modified    Tom Clay, 2026 - Adapted for ReXGlue runtime
+  */
+ 
++#include <exception>
+ #include <sstream>
+ 
+ #include <format>
+@@ -137,13 +138,21 @@ void UserProfile::LoadSetting(UserProfile::Setting* setting) {
+ 
+ void UserProfile::SaveSetting(UserProfile::Setting* setting) {
+   if (setting->IsTitleSpecific()) {
+-    auto serialized_setting = setting->Serialize();
+-    auto content_dir = content_->ResolveGameUserContentPath();
+-    std::filesystem::create_directories(content_dir);
+-    auto setting_id = std::format("{:08X}", setting->setting_id);
+-    auto file_path = content_dir / setting_id;
+-    if (auto written = rex::platform::WriteHostFile(file_path, serialized_setting); !written) {
+-      REXSYS_WARN("profile setting is not saved, {}", written.error().message);
++    // ReXGlue Android: the profile content path may be unwritable/invalid on
++    // Android, and std::filesystem::create_directories throws an uncaught
++    // filesystem_error that kills the guest. Saving settings is non-essential,
++    // so swallow the exception and keep the runtime alive.
++    try {
++      auto serialized_setting = setting->Serialize();
++      auto content_dir = content_->ResolveGameUserContentPath();
++      std::filesystem::create_directories(content_dir);
++      auto setting_id = std::format("{:08X}", setting->setting_id);
++      auto file_path = content_dir / setting_id;
++      if (auto written = rex::platform::WriteHostFile(file_path, serialized_setting); !written) {
++        REXSYS_WARN("profile setting is not saved, {}", written.error().message);
++      }
++    } catch (const std::exception& e) {
++      REXSYS_WARN("profile setting save failed: {}", e.what());
+     }
+   } else {
+     REXSYS_WARN("Attempting to save unsupported profile setting to disk");
 diff --git a/thirdparty/CMakeLists.txt b/thirdparty/CMakeLists.txt
 index 32d57aa..11eff67 100644
 --- a/thirdparty/CMakeLists.txt

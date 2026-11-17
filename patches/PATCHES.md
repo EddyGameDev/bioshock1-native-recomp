@@ -49,6 +49,9 @@ hand; the patch is small and each hunk is documented in
   `BS1-*` logcat diagnostics on Android.
 - `threading_posix.cpp`: skip non-essential `std::string` thread-name surgery on
   Android (host heap-corruption workaround).
+- `user_profile.cpp`: swallow filesystem exceptions when saving Xbox profile
+  settings, which otherwise throw an uncaught exception and kill the guest when
+  advancing past the main menu on Android.
 - Various CMake/platform files: Android surface support, `log` linkage, NDEBUG
   for the SPIR-V target.
 
