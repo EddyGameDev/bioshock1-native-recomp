@@ -250,6 +250,8 @@ Java_com_bioshock1_recomp_NativeBridge_nativeSetControls(JNIEnv* env, jclass, jf
     };
     if (count > 0) state.thumb_lx = to_i16(axes[0]);
     if (count > 1) state.thumb_ly = to_i16(axes[1]);
+    if (count > 2) state.thumb_rx = to_i16(axes[2]);
+    if (count > 3) state.thumb_ry = to_i16(axes[3]);
     env->ReleaseFloatArrayElements(axes_array, axes, JNI_ABORT);
   }
   {
