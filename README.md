@@ -142,6 +142,12 @@ the video mode the guest sees) and supports optional supersampling:
 If you prefer to run the exe directly, pass the same flags yourself:
 `bioshock1.exe --ui.resolution=1920x1080 --gpu.resolution_scale_x=2 --gpu.resolution_scale_y=2`.
 
+**In-game resolution toggle:** press **F1** in the Windows build to cycle the
+internal draw resolution `1x → 2x → 3x → 1x`. The console prints the new scale
+and the title reloads so the GPU caches rebuild with the new value (the guest
+returns to the title screen, so this is best for A/B comparison rather than
+mid-gameplay). The active scale also appears in the window title bar.
+
 ### 3. Build and install the Android launcher
 
 ```powershell

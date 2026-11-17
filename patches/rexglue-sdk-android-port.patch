@@ -885,40 +885,50 @@ index 4388fd4..b705b63 100644
    if (REXGLUE_ENABLE_TRACY)
      # TARGET_NAME makes install(EXPORT) namespace the target, a plain name leaves consumers
 diff --git a/src/kernel/memory.cpp b/src/kernel/memory.cpp
-index 4ca5049..9a5f51b 100644
+index 4ca5049..3c3eeec 100644
 --- a/src/kernel/memory.cpp
 +++ b/src/kernel/memory.cpp
-@@ -9,6 +9,8 @@
+@@ -9,6 +9,10 @@
   * @modified    Tom Clay, 2026 - Adapted for ReXGlue runtime
   */
  
++#if defined(__ANDROID__)
 +#include <android/log.h>
++#endif
 +
  #include <algorithm>
  #include <array>
  #include <atomic>
-@@ -239,9 +241,12 @@ bool GuestAddressSpace::Initialize() {
+@@ -239,9 +243,16 @@ bool GuestAddressSpace::Initialize() {
                                                    rex::memory::PageAccess::kReadWrite, false);
    if (mapping_ == rex::memory::kFileMappingHandleInvalid) {
      REXSYS_ERROR("Unable to reserve the 4gb guest address space.");
++#if defined(__ANDROID__)
 +    __android_log_print(ANDROID_LOG_ERROR, "BS1-KERN", "4GB file mapping FAILED size=0x%llx",
 +                        (unsigned long long)mapping_size);
++#endif
      REX_ASSERT_ALWAYS();
      return false;
    }
++#if defined(__ANDROID__)
 +  __android_log_print(ANDROID_LOG_INFO, "BS1-KERN", "4GB mapping OK fd=%d", (int)(intptr_t)mapping_);
++#endif
  
  #if REX_PLATFORM_MAC
    if (MapViewsMac()) {
-@@ -261,9 +266,11 @@ bool GuestAddressSpace::Initialize() {
+@@ -261,9 +272,15 @@ bool GuestAddressSpace::Initialize() {
    }
    if (!mapping_base_) {
      REXSYS_ERROR("Unable to find a continuous block in the 64bit address space.");
++#if defined(__ANDROID__)
 +    __android_log_print(ANDROID_LOG_ERROR, "BS1-KERN", "continuous 4GB block FAILED");
++#endif
      REX_ASSERT_ALWAYS();
      return false;
    }
++#if defined(__ANDROID__)
 +  __android_log_print(ANDROID_LOG_INFO, "BS1-KERN", "mapped at base=%p", (void*)mapping_base_);
++#endif
  #endif
    virtual_membase_ = mapping_base_;
    physical_membase_ = mapping_base_ + 0x100000000ull;
@@ -949,19 +959,21 @@ index 2049140..f7f3965 100644
  /** The kernel module. The program registers one with the app or loads it from rexkernel. */
  class KernelModule final : public IModule, public IKernelControl {
 diff --git a/src/kernel/xboxkrnl/xboxkrnl_video.cpp b/src/kernel/xboxkrnl/xboxkrnl_video.cpp
-index a8dcc2f..df21ff2 100644
+index a8dcc2f..7df085b 100644
 --- a/src/kernel/xboxkrnl/xboxkrnl_video.cpp
 +++ b/src/kernel/xboxkrnl/xboxkrnl_video.cpp
-@@ -9,6 +9,8 @@
+@@ -9,6 +9,10 @@
   * @modified    Tom Clay, 2026 - Adapted for ReXGlue runtime
   */
  
++#if defined(__ANDROID__)
 +#include <android/log.h>
++#endif
 +
  #include <algorithm>
  #include <atomic>
  #include <string>
-@@ -378,6 +380,12 @@ void VdSwap_entry(MappedVoid buffer_ptr, MappedVoid fetch_ptr, [[maybe_unused]]
+@@ -378,6 +382,12 @@ void VdSwap_entry(MappedVoid buffer_ptr, MappedVoid fetch_ptr, [[maybe_unused]]
                    [[maybe_unused]] MappedVoid unk3, [[maybe_unused]] MappedVoid unk4,
                    MappedU32 frontbuffer_ptr, MappedU32 texture_format_ptr,
                    MappedU32 color_space_ptr, MappedU32 width, MappedU32 height) {
@@ -987,17 +999,21 @@ index 9a14b64..dc76119 100644
 +endif ()
  target_link_libraries(rexui-sdl3 PRIVATE ${REX_UI_SDL3_LIBS})
 diff --git a/src/ui/sdl3/sdl3_ui_driver.cpp b/src/ui/sdl3/sdl3_ui_driver.cpp
-index 035393b..414f71e 100644
+index 035393b..b947743 100644
 --- a/src/ui/sdl3/sdl3_ui_driver.cpp
 +++ b/src/ui/sdl3/sdl3_ui_driver.cpp
-@@ -1,4 +1,6 @@
+@@ -1,4 +1,10 @@
  #include "ui/sdl3/sdl3_ui_driver.h"
++#if defined(__ANDROID__)
 +#include <android/log.h>
 +#define REXUI_AJLOG(...) __android_log_print(ANDROID_LOG_INFO, "BS1-UI", __VA_ARGS__)
++#else
++#define REXUI_AJLOG(...) ((void)0)
++#endif
  
  #include <array>
  #include <cmath>
-@@ -229,6 +231,12 @@ struct SDL3UIDriver::State {
+@@ -229,6 +235,12 @@ struct SDL3UIDriver::State {
    void HandleWindowEvent(const SDL_Event& event) {
      switch (event.type) {
        case SDL_EVENT_WINDOW_PIXEL_SIZE_CHANGED: {
@@ -1010,7 +1026,7 @@ index 035393b..414f71e 100644
          UISetupEvent e(UIEvent::Type::kResize);
          Deliver(e);
          break;
-@@ -433,8 +441,10 @@ Result<void> SDL3UIDriver::Initialize(IDriverContext& context) {
+@@ -433,8 +445,10 @@ Result<void> SDL3UIDriver::Initialize(IDriverContext& context) {
    }
    if (!SDL_InitSubSystem(SDL_INIT_VIDEO)) {
      REXUI_WARN("no video driver, running headless: {}", SDL_GetError());
@@ -1021,7 +1037,7 @@ index 035393b..414f71e 100644
    s.video_started = true;
    const char* in_use = SDL_GetCurrentVideoDriver();
    REXUI_INFO("SDL video driver: {}", in_use ? in_use : "unknown");
-@@ -493,11 +503,16 @@ Result<void> SDL3UIDriver::OpenWindow(const WindowConfig& config) {
+@@ -493,11 +507,16 @@ Result<void> SDL3UIDriver::OpenWindow(const WindowConfig& config) {
    const int width = static_cast<int>(config.width);
    const int height = static_cast<int>(config.height);
  #endif
@@ -1038,7 +1054,7 @@ index 035393b..414f71e 100644
    s.window_id = SDL_GetWindowID(s.window);
    s.fullscreen = config.fullscreen;
    s.exclusive = config.fullscreen_exclusive;
-@@ -695,6 +710,14 @@ Result<NativeWindow> SDL3UIDriver::GetNativeWindow() const {
+@@ -695,6 +714,14 @@ Result<NativeWindow> SDL3UIDriver::GetNativeWindow() const {
    NativeWindow result;
    result.sdl = s.window;
    const SDL_PropertiesID props = SDL_GetWindowProperties(s.window);
