@@ -38,12 +38,20 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
-$project = Split-Path $PSScriptRoot -Parent
-$exeDir = Join-Path $project 'build\bs1-real'
-$exe = Join-Path $exeDir 'bioshock1.exe'
 
-if (-not (Test-Path -LiteralPath $exe)) {
-    throw "Host launcher not found: $exe (run 'python tools/pipeline.py build-native' first)"
+# Support two layouts:
+#   1) Source repo: run-windows.ps1 at the repo root, exe under build\bs1-real
+#   2) Release zip: run-windows.ps1 next to bioshock1.exe
+$repoExe = Join-Path $PSScriptRoot 'build\bs1-real\bioshock1.exe'
+$zipExe = Join-Path $PSScriptRoot 'bioshock1.exe'
+if (Test-Path -LiteralPath $repoExe) {
+    $exe = $repoExe
+    $exeDir = Split-Path $repoExe -Parent
+} elseif (Test-Path -LiteralPath $zipExe) {
+    $exe = $zipExe
+    $exeDir = $PSScriptRoot
+} else {
+    throw "Host launcher not found at '$repoExe' or '$zipExe'. Extract the whole release zip, or run 'python tools/pipeline.py build-native' from the repo."
 }
 if (-not (Test-Path -LiteralPath $GameRoot)) {
     Write-Warning "Game root '$GameRoot' does not exist; the title will fail to load."
