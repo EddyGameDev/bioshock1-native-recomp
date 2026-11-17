@@ -12,9 +12,11 @@
   Window/video mode as WxH (default 1920x1080). Equivalent to --ui.resolution.
 
 .PARAMETER Scale
-  Internal draw resolution scale, 1-8 (default 1). Values > 1 render the guest's
+  Internal draw resolution scale, 1-8 (default 2). Values > 1 render the guest's
   3D at a higher resolution and downsample, sharpening the image at the cost of
-  GPU load. Try 2 first.
+  GPU load. The default of 2 matches the sharper look of other Xenos emulators
+  instead of the blurry 1x upscale. Use 1 for the original internal resolution,
+  or 3 for even sharper output on a strong GPU.
 
 .PARAMETER Windowed
   Run in a window instead of fullscreen.
@@ -23,13 +25,14 @@
   Path to the extracted game tree (default C:\bs1game).
 
 .EXAMPLE
-  .\run-windows.ps1                       # 1920x1080 fullscreen, 1x scale
-  .\run-windows.ps1 -Scale 2              # 1920x1080, 2x supersampling
-  .\run-windows.ps1 -Resolution 2560x1440 -Scale 2 -Windowed
+  .\run-windows.ps1                       # 1920x1080 fullscreen, 2x scale (sharp)
+  .\run-windows.ps1 -Scale 1              # original 1x internal resolution
+  .\run-windows.ps1 -Scale 3              # even sharper, needs a strong GPU
+  .\run-windows.ps1 -Resolution 2560x1440 -Scale 3 -Windowed
 #>
 param(
     [string]$Resolution = '1920x1080',
-    [ValidateRange(1, 8)][int]$Scale = 1,
+    [ValidateRange(1, 8)][int]$Scale = 2,
     [switch]$Windowed,
     [string]$GameRoot = 'C:\bs1game'
 )

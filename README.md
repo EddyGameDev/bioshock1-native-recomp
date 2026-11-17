@@ -146,7 +146,10 @@ If you prefer to run the exe directly, pass the same flags yourself:
 internal draw resolution `1x → 2x → 3x → 1x`. The console prints the new scale
 and the title reloads so the GPU caches rebuild with the new value (the guest
 returns to the title screen, so this is best for A/B comparison rather than
-mid-gameplay). The active scale also appears in the window title bar.
+mid-gameplay). You can confirm the applied value in the log — look for
+`BS1: requested draw resolution scale = NxN`. The launcher defaults to **2x**
+because the guest's native 1x output is blurry when upscaled to a modern
+monitor; use `-Scale 1` for the original internal resolution.
 
 ### 3. Build and install the Android launcher
 
