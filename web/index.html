@@ -1,0 +1,44 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>BioShock 1 Android Recomp — Docs Intelligence</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header>
+  <div class="brand">
+    <div class="logo">BS1</div>
+    <div>
+      <h1>Docs Intelligence</h1>
+      <p>BioShock 1 · Native Android Static Recomp</p>
+    </div>
+  </div>
+  <div class="search-wrap">
+    <input id="search" type="search" placeholder="Search all docs, code and facts…" autocomplete="off">
+    <span class="hint">SQLite + local SPA</span>
+  </div>
+</header>
+
+<main>
+  <nav class="sidebar">
+    <div class="tabs" id="tabs">
+      <button data-tab="overview" class="active">Overview</button>
+      <button data-tab="documents">Documents</button>
+      <button data-tab="facts">Facts</button>
+      <button data-tab="checks">Checks</button>
+      <button data-tab="timeline">Timeline</button>
+      <button data-tab="graph">Graph</button>
+    </div>
+    <div id="sidebar-body"></div>
+  </nav>
+
+  <section class="content" id="content">
+    <div class="loading">Loading database…</div>
+  </section>
+</main>
+
+<script src="app.js"></script>
+</body>
+</html>

@@ -1,0 +1,1892 @@
+{
+  "file": "F:\\Game Recomp Into a Native Android Port\\BioShock 1 Android Port With Launcher\\BioShock1-Android-Recomp\\_game\\default.xex",
+  "file_size": 13021184,
+  "module_flags": "0x00000001",
+  "pe_offset": "0x3000",
+  "security_offset": "0x88",
+  "optional_headers": [
+    {
+      "id": "0x000002FF",
+      "name": "EXECUTION_INFO",
+      "value": "0x00001544"
+    },
+    {
+      "id": "0x000003FF",
+      "name": "SYSTEM_FLAGS",
+      "value": "0x00001558"
+    },
+    {
+      "id": "0x00010100",
+      "name": "BOUNDING_PATH",
+      "value": "0x8219D698"
+    },
+    {
+      "id": "0x00010201",
+      "name": "IMAGE_BASE_ADDRESS",
+      "value": "0x82000000"
+    },
+    {
+      "id": "0x000103FF",
+      "name": "IMPORT_LIBRARIES",
+      "value": "0x000028E0"
+    },
+    {
+      "id": "0x00018002",
+      "name": "LAN_KEY",
+      "value": "0x00001578"
+    },
+    {
+      "id": "0x000183FF",
+      "name": "ORIGINAL_BASE_ADDRESS",
+      "value": "0x00001580"
+    },
+    {
+      "id": "0x000200FF",
+      "name": "STATIC_LIBRARIES",
+      "value": "0x00001590"
+    },
+    {
+      "id": "0x00020104",
+      "name": "DELTA_PATCH_DESCRIPTOR",
+      "value": "0x00001624"
+    },
+    {
+      "id": "0x00020200",
+      "name": "DEFAULT_HEAP_SIZE",
+      "value": "0x001F0000"
+    },
+    {
+      "id": "0x00040006",
+      "name": "TLS_INFO",
+      "value": "0x00001634"
+    },
+    {
+      "id": "0x00040310",
+      "name": "DEFAULT_STACK_SIZE",
+      "value": "0x0000164C"
+    },
+    {
+      "id": "0x00040404",
+      "name": "DEFAULT_FILESYSTEM_CACHE_SIZE",
+      "value": "0x0000168C"
+    },
+    {
+      "id": "0x000405FF",
+      "name": "BASE_REFERENCE",
+      "value": "0x0000169C"
+    }
+  ],
+  "security": {
+    "header_size": "0x14BC",
+    "image_size": "0xCD0000"
+  },
+  "execution_info": {
+    "media_id": "0x00000014",
+    "version": "5454",
+    "version_raw": "0x35343534",
+    "base_version": "07D8",
+    "base_version_raw": "0x30374438",
+    "title_id": "0x545407D8",
+    "title_id_raw_field": "0x82C36D80",
+    "platform_id": 0,
+    "executable_type": 9,
+    "disc_media_type": 93
+  },
+  "image_base": "0x82000000",
+  "original_image_name": "default.exe",
+  "static_libraries": [
+    {
+      "name": "D3D9",
+      "version": "2.0.5426.2",
+      "build": 5426,
+      "approval": 64
+    },
+    {
+      "name": "XAPILIB",
+      "version": "2.0.5426.2",
+      "build": 5426,
+      "approval": 64
+    },
+    {
+      "name": "XONLINE",
+      "version": "2.0.5426.0",
+      "build": 5426,
+      "approval": 64
+    },
+    {
+      "name": "LIBCPMT",
+      "version": "2.0.5426.0",
+      "build": 5426,
+      "approval": 64
+    },
+    {
+      "name": "XBOXKRNL",
+      "version": "2.0.5426.0",
+      "build": 5426,
+      "approval": 64
+    },
+    {
+      "name": "D3DX9",
+      "version": "2.0.5426.0",
+      "build": 5426,
+      "approval": 64
+    },
+    {
+      "name": "XAUD",
+      "version": "2.0.5426.0",
+      "build": 5426,
+      "approval": 64
+    },
+    {
+      "name": "XMP",
+      "version": "2.0.5426.0",
+      "build": 5426,
+      "approval": 64
+    },
+    {
+      "name": "XGRAPHC",
+      "version": "2.0.5426.0",
+      "build": 5426,
+      "approval": 64
+    }
+  ],
+  "xdk_builds": [
+    5426
+  ],
+  "static_libraries_header_id": "0x000200FF",
+  "import_libraries": [
+    {
+      "library": "xam.xex",
+      "version": "32.22.32512",
+      "records": 102,
+      "import_records": [
+        {
+          "first": "0x82000400",
+          "second": "0x82A40624"
+        },
+        {
+          "first": "0x82000404",
+          "second": "0x82A40634"
+        },
+        {
+          "first": "0x82000408",
+          "second": "0x82A40644"
+        },
+        {
+          "first": "0x8200040C",
+          "second": "0x82A40654"
+        },
+        {
+          "first": "0x82000410",
+          "second": "0x82A40664"
+        },
+        {
+          "first": "0x82000414",
+          "second": "0x82A40674"
+        },
+        {
+          "first": "0x82000418",
+          "second": "0x82A40684"
+        },
+        {
+          "first": "0x8200041C",
+          "second": "0x82A40694"
+        },
+        {
+          "first": "0x82000420",
+          "second": "0x82A406A4"
+        },
+        {
+          "first": "0x82000424",
+          "second": "0x82A406B4"
+        },
+        {
+          "first": "0x82000428",
+          "second": "0x82A406C4"
+        },
+        {
+          "first": "0x8200042C",
+          "second": "0x82A406D4"
+        },
+        {
+          "first": "0x82000430",
+          "second": "0x82A406E4"
+        },
+        {
+          "first": "0x82000434",
+          "second": "0x82A406F4"
+        },
+        {
+          "first": "0x82000438",
+          "second": "0x82A40704"
+        },
+        {
+          "first": "0x8200043C",
+          "second": "0x82A40714"
+        },
+        {
+          "first": "0x82000440",
+          "second": "0x82A40724"
+        },
+        {
+          "first": "0x82000444",
+          "second": "0x82A40734"
+        },
+        {
+          "first": "0x82000448",
+          "second": "0x82A40744"
+        },
+        {
+          "first": "0x8200044C",
+          "second": "0x82A40754"
+        },
+        {
+          "first": "0x82000450",
+          "second": "0x82A40764"
+        },
+        {
+          "first": "0x82000454",
+          "second": "0x82A40774"
+        },
+        {
+          "first": "0x82000458",
+          "second": "0x82A40784"
+        },
+        {
+          "first": "0x8200045C",
+          "second": "0x82A40794"
+        },
+        {
+          "first": "0x82000460",
+          "second": "0x82A407A4"
+        },
+        {
+          "first": "0x82000464",
+          "second": "0x82A407B4"
+        },
+        {
+          "first": "0x82000468",
+          "second": "0x82A407C4"
+        },
+        {
+          "first": "0x8200046C",
+          "second": "0x82A41314"
+        },
+        {
+          "first": "0x82000470",
+          "second": "0x82A41304"
+        },
+        {
+          "first": "0x82000474",
+          "second": "0x82A412F4"
+        },
+        {
+          "first": "0x82000478",
+          "second": "0x82A412E4"
+        },
+        {
+          "first": "0x8200047C",
+          "second": "0x82A40F34"
+        },
+        {
+          "first": "0x82000480",
+          "second": "0x82A40F24"
+        },
+        {
+          "first": "0x82000484",
+          "second": "0x82A40F14"
+        },
+        {
+          "first": "0x82000488",
+          "second": "0x82A40F04"
+        },
+        {
+          "first": "0x8200048C",
+          "second": "0x82A40EF4"
+        },
+        {
+          "first": "0x82000490",
+          "second": "0x82A40EE4"
+        },
+        {
+          "first": "0x82000494",
+          "second": "0x82A40ED4"
+        },
+        {
+          "first": "0x82000498",
+          "second": "0x82A40EC4"
+        },
+        {
+          "first": "0x8200049C",
+          "second": "0x82A40EB4"
+        },
+        {
+          "first": "0x820004A0",
+          "second": "0x82A40EA4"
+        },
+        {
+          "first": "0x820004A4",
+          "second": "0x82A40E94"
+        },
+        {
+          "first": "0x820004A8",
+          "second": "0x82A40E84"
+        },
+        {
+          "first": "0x820004AC",
+          "second": "0x82A40E74"
+        },
+        {
+          "first": "0x820004B0",
+          "second": "0x82A40E64"
+        },
+        {
+          "first": "0x820004B4",
+          "second": "0x82A40E54"
+        },
+        {
+          "first": "0x820004B8",
+          "second": "0x82A40E44"
+        },
+        {
+          "first": "0x820004BC",
+          "second": "0x82A40E34"
+        },
+        {
+          "first": "0x820004C0",
+          "second": "0x82A40E24"
+        },
+        {
+          "first": "0x820004C4",
+          "second": "0x82A40E14"
+        },
+        {
+          "first": "0x820004C8",
+          "second": "0x82A40E04"
+        },
+        {
+          "first": "0x0000053C",
+          "second": "0x00000000"
+        },
+        {
+          "first": "0x00000000",
+          "second": "0x00000000"
+        },
+        {
+          "first": "0x00000000",
+          "second": "0x00000000"
+        },
+        {
+          "first": "0x45DC17E0",
+          "second": "0x20167F00"
+        },
+        {
+          "first": "0x20167F00",
+          "second": "0x00010145"
+        },
+        {
+          "first": "0x820004D0",
+          "second": "0x82A40CE4"
+        },
+        {
+          "first": "0x820004D4",
+          "second": "0x820004D8"
+        },
+        {
+          "first": "0x82A40CF4",
+          "second": "0x820004DC"
+        },
+        {
+          "first": "0x82A40D04",
+          "second": "0x820004E0"
+        },
+        {
+          "first": "0x82A40D14",
+          "second": "0x820004E4"
+        },
+        {
+          "first": "0x82A40D24",
+          "second": "0x820004E8"
+        },
+        {
+          "first": "0x82A40D34",
+          "second": "0x820004EC"
+        },
+        {
+          "first": "0x82A40D44",
+          "second": "0x820004F0"
+        },
+        {
+          "first": "0x82A40D54",
+          "second": "0x820004F4"
+        },
+        {
+          "first": "0x82A40D64",
+          "second": "0x820004F8"
+        },
+        {
+          "first": "0x82A40D74",
+          "second": "0x820004FC"
+        },
+        {
+          "first": "0x82A40D84",
+          "second": "0x82000500"
+        },
+        {
+          "first": "0x82A40D94",
+          "second": "0x82000504"
+        },
+        {
+          "first": "0x82A40DB4",
+          "second": "0x82000508"
+        },
+        {
+          "first": "0x82A40DC4",
+          "second": "0x8200050C"
+        },
+        {
+          "first": "0x82A40DD4",
+          "second": "0x82000510"
+        },
+        {
+          "first": "0x82A40DE4",
+          "second": "0x82000514"
+        },
+        {
+          "first": "0x82A40DF4",
+          "second": "0x82000518"
+        },
+        {
+          "first": "0x82A40CD4",
+          "second": "0x8200051C"
+        },
+        {
+          "first": "0x82A40CC4",
+          "second": "0x82000520"
+        },
+        {
+          "first": "0x82A40CB4",
+          "second": "0x82000524"
+        },
+        {
+          "first": "0x82A40CA4",
+          "second": "0x82000528"
+        },
+        {
+          "first": "0x82A40C94",
+          "second": "0x8200052C"
+        },
+        {
+          "first": "0x82A40C84",
+          "second": "0x82000530"
+        },
+        {
+          "first": "0x82A40C74",
+          "second": "0x82000534"
+        },
+        {
+          "first": "0x82A40C64",
+          "second": "0x82000538"
+        },
+        {
+          "first": "0x82A40C54",
+          "second": "0x8200053C"
+        },
+        {
+          "first": "0x82000540",
+          "second": "0x82A40C44"
+        },
+        {
+          "first": "0x82000544",
+          "second": "0x82A40C34"
+        },
+        {
+          "first": "0x82000548",
+          "second": "0x82A40C24"
+        },
+        {
+          "first": "0x8200054C",
+          "second": "0x82A40C14"
+        },
+        {
+          "first": "0x82000550",
+          "second": "0x82A40C04"
+        },
+        {
+          "first": "0x82000554",
+          "second": "0x82A40BF4"
+        },
+        {
+          "first": "0x82000558",
+          "second": "0x82A40BE4"
+        },
+        {
+          "first": "0x8200055C",
+          "second": "0x82A40BD4"
+        },
+        {
+          "first": "0x82000560",
+          "second": "0x82A40BC4"
+        },
+        {
+          "first": "0x82000564",
+          "second": "0x82A40BB4"
+        },
+        {
+          "first": "0x82000568",
+          "second": "0x82A40BA4"
+        },
+        {
+          "first": "0x8200056C",
+          "second": "0x82A40B94"
+        },
+        {
+          "first": "0x82000570",
+          "second": "0x82A40B84"
+        },
+        {
+          "first": "0x82000574",
+          "second": "0x82A40B74"
+        },
+        {
+          "first": "0x82000578",
+          "second": "0x82A40B64"
+        },
+        {
+          "first": "0x8200057C",
+          "second": "0x82A40B54"
+        },
+        {
+          "first": "0x82000580",
+          "second": "0x82A40B44"
+        },
+        {
+          "first": "0x82000584",
+          "second": "0x82A40B34"
+        },
+        {
+          "first": "0x82000588",
+          "second": "0x82A40B24"
+        }
+      ]
+    },
+    {
+      "library": "xboxkrnl.exe",
+      "version": "32.22.32512",
+      "records": 325,
+      "import_records": [
+        {
+          "first": "0x820004D0",
+          "second": "0x82A40CE4"
+        },
+        {
+          "first": "0x820004D4",
+          "second": "0x820004D8"
+        },
+        {
+          "first": "0x82A40CF4",
+          "second": "0x820004DC"
+        },
+        {
+          "first": "0x82A40D04",
+          "second": "0x820004E0"
+        },
+        {
+          "first": "0x82A40D14",
+          "second": "0x820004E4"
+        },
+        {
+          "first": "0x82A40D24",
+          "second": "0x820004E8"
+        },
+        {
+          "first": "0x82A40D34",
+          "second": "0x820004EC"
+        },
+        {
+          "first": "0x82A40D44",
+          "second": "0x820004F0"
+        },
+        {
+          "first": "0x82A40D54",
+          "second": "0x820004F4"
+        },
+        {
+          "first": "0x82A40D64",
+          "second": "0x820004F8"
+        },
+        {
+          "first": "0x82A40D74",
+          "second": "0x820004FC"
+        },
+        {
+          "first": "0x82A40D84",
+          "second": "0x82000500"
+        },
+        {
+          "first": "0x82A40D94",
+          "second": "0x82000504"
+        },
+        {
+          "first": "0x82A40DB4",
+          "second": "0x82000508"
+        },
+        {
+          "first": "0x82A40DC4",
+          "second": "0x8200050C"
+        },
+        {
+          "first": "0x82A40DD4",
+          "second": "0x82000510"
+        },
+        {
+          "first": "0x82A40DE4",
+          "second": "0x82000514"
+        },
+        {
+          "first": "0x82A40DF4",
+          "second": "0x82000518"
+        },
+        {
+          "first": "0x82A40CD4",
+          "second": "0x8200051C"
+        },
+        {
+          "first": "0x82A40CC4",
+          "second": "0x82000520"
+        },
+        {
+          "first": "0x82A40CB4",
+          "second": "0x82000524"
+        },
+        {
+          "first": "0x82A40CA4",
+          "second": "0x82000528"
+        },
+        {
+          "first": "0x82A40C94",
+          "second": "0x8200052C"
+        },
+        {
+          "first": "0x82A40C84",
+          "second": "0x82000530"
+        },
+        {
+          "first": "0x82A40C74",
+          "second": "0x82000534"
+        },
+        {
+          "first": "0x82A40C64",
+          "second": "0x82000538"
+        },
+        {
+          "first": "0x82A40C54",
+          "second": "0x8200053C"
+        },
+        {
+          "first": "0x82000540",
+          "second": "0x82A40C44"
+        },
+        {
+          "first": "0x82000544",
+          "second": "0x82A40C34"
+        },
+        {
+          "first": "0x82000548",
+          "second": "0x82A40C24"
+        },
+        {
+          "first": "0x8200054C",
+          "second": "0x82A40C14"
+        },
+        {
+          "first": "0x82000550",
+          "second": "0x82A40C04"
+        },
+        {
+          "first": "0x82000554",
+          "second": "0x82A40BF4"
+        },
+        {
+          "first": "0x82000558",
+          "second": "0x82A40BE4"
+        },
+        {
+          "first": "0x8200055C",
+          "second": "0x82A40BD4"
+        },
+        {
+          "first": "0x82000560",
+          "second": "0x82A40BC4"
+        },
+        {
+          "first": "0x82000564",
+          "second": "0x82A40BB4"
+        },
+        {
+          "first": "0x82000568",
+          "second": "0x82A40BA4"
+        },
+        {
+          "first": "0x8200056C",
+          "second": "0x82A40B94"
+        },
+        {
+          "first": "0x82000570",
+          "second": "0x82A40B84"
+        },
+        {
+          "first": "0x82000574",
+          "second": "0x82A40B74"
+        },
+        {
+          "first": "0x82000578",
+          "second": "0x82A40B64"
+        },
+        {
+          "first": "0x8200057C",
+          "second": "0x82A40B54"
+        },
+        {
+          "first": "0x82000580",
+          "second": "0x82A40B44"
+        },
+        {
+          "first": "0x82000584",
+          "second": "0x82A40B34"
+        },
+        {
+          "first": "0x82000588",
+          "second": "0x82A40B24"
+        },
+        {
+          "first": "0x8200058C",
+          "second": "0x82A40B14"
+        },
+        {
+          "first": "0x82000590",
+          "second": "0x82A40B04"
+        },
+        {
+          "first": "0x82000594",
+          "second": "0x82000598"
+        },
+        {
+          "first": "0x82A40AF4",
+          "second": "0x8200059C"
+        },
+        {
+          "first": "0x82A40AE4",
+          "second": "0x820005A0"
+        },
+        {
+          "first": "0x82A40AD4",
+          "second": "0x820005A4"
+        },
+        {
+          "first": "0x82A40AC4",
+          "second": "0x820005A8"
+        },
+        {
+          "first": "0x82A40AB4",
+          "second": "0x820005AC"
+        },
+        {
+          "first": "0x82A40AA4",
+          "second": "0x820005B0"
+        },
+        {
+          "first": "0x82A40A94",
+          "second": "0x820005B4"
+        },
+        {
+          "first": "0x82A40A84",
+          "second": "0x820005B8"
+        },
+        {
+          "first": "0x82A40A74",
+          "second": "0x820005BC"
+        },
+        {
+          "first": "0x82A40A64",
+          "second": "0x820005C0"
+        },
+        {
+          "first": "0x82A40A54",
+          "second": "0x820005C4"
+        },
+        {
+          "first": "0x82A40A44",
+          "second": "0x820005C8"
+        },
+        {
+          "first": "0x82A40A34",
+          "second": "0x820005CC"
+        },
+        {
+          "first": "0x820005D0",
+          "second": "0x82A40A24"
+        },
+        {
+          "first": "0x820005D4",
+          "second": "0x82A40A14"
+        },
+        {
+          "first": "0x820005D8",
+          "second": "0x82A40A04"
+        },
+        {
+          "first": "0x820005DC",
+          "second": "0x82A409F4"
+        },
+        {
+          "first": "0x820005E0",
+          "second": "0x82A409E4"
+        },
+        {
+          "first": "0x820005E4",
+          "second": "0x820005E8"
+        },
+        {
+          "first": "0x82A409D4",
+          "second": "0x820005EC"
+        },
+        {
+          "first": "0x82A409C4",
+          "second": "0x820005F0"
+        },
+        {
+          "first": "0x82A409B4",
+          "second": "0x820005F4"
+        },
+        {
+          "first": "0x82A409A4",
+          "second": "0x820005F8"
+        },
+        {
+          "first": "0x82A40F44",
+          "second": "0x820005FC"
+        },
+        {
+          "first": "0x82A40F54",
+          "second": "0x82000600"
+        },
+        {
+          "first": "0x82A40F64",
+          "second": "0x82000604"
+        },
+        {
+          "first": "0x82A40F74",
+          "second": "0x82000608"
+        },
+        {
+          "first": "0x82A40F84",
+          "second": "0x8200060C"
+        },
+        {
+          "first": "0x82A40F94",
+          "second": "0x82000610"
+        },
+        {
+          "first": "0x82A40FA4",
+          "second": "0x82000614"
+        },
+        {
+          "first": "0x82A40FB4",
+          "second": "0x82000618"
+        },
+        {
+          "first": "0x82A40FC4",
+          "second": "0x8200061C"
+        },
+        {
+          "first": "0x82000620",
+          "second": "0x82A40FD4"
+        },
+        {
+          "first": "0x82000624",
+          "second": "0x82A40FE4"
+        },
+        {
+          "first": "0x82000628",
+          "second": "0x82A40FF4"
+        },
+        {
+          "first": "0x8200062C",
+          "second": "0x82000630"
+        },
+        {
+          "first": "0x82A41004",
+          "second": "0x82000634"
+        },
+        {
+          "first": "0x82A41014",
+          "second": "0x82000638"
+        },
+        {
+          "first": "0x82A41024",
+          "second": "0x8200063C"
+        },
+        {
+          "first": "0x82A41034",
+          "second": "0x82000640"
+        },
+        {
+          "first": "0x82A41044",
+          "second": "0x82000644"
+        },
+        {
+          "first": "0x82A41054",
+          "second": "0x82000648"
+        },
+        {
+          "first": "0x82A41064",
+          "second": "0x8200064C"
+        },
+        {
+          "first": "0x82A41074",
+          "second": "0x82000650"
+        },
+        {
+          "first": "0x82A41084",
+          "second": "0x82000654"
+        },
+        {
+          "first": "0x82A41094",
+          "second": "0x82000658"
+        },
+        {
+          "first": "0x82A410A4",
+          "second": "0x8200065C"
+        },
+        {
+          "first": "0x82A410B4",
+          "second": "0x82000660"
+        },
+        {
+          "first": "0x82A410C4",
+          "second": "0x82000664"
+        },
+        {
+          "first": "0x82A410D4",
+          "second": "0x82000668"
+        },
+        {
+          "first": "0x82A410E4",
+          "second": "0x8200066C"
+        },
+        {
+          "first": "0x82A410F4",
+          "second": "0x82000670"
+        },
+        {
+          "first": "0x82A41104",
+          "second": "0x82000674"
+        },
+        {
+          "first": "0x82A41114",
+          "second": "0x82000678"
+        },
+        {
+          "first": "0x82A41124",
+          "second": "0x8200067C"
+        },
+        {
+          "first": "0x82A41134",
+          "second": "0x82000680"
+        },
+        {
+          "first": "0x82A41144",
+          "second": "0x82000684"
+        },
+        {
+          "first": "0x82A41154",
+          "second": "0x82000688"
+        },
+        {
+          "first": "0x82A41164",
+          "second": "0x8200068C"
+        },
+        {
+          "first": "0x82A41174",
+          "second": "0x82000690"
+        },
+        {
+          "first": "0x82A41184",
+          "second": "0x82000694"
+        },
+        {
+          "first": "0x82A41194",
+          "second": "0x82000698"
+        },
+        {
+          "first": "0x82A411A4",
+          "second": "0x8200069C"
+        },
+        {
+          "first": "0x82A411B4",
+          "second": "0x820006A0"
+        },
+        {
+          "first": "0x82A411C4",
+          "second": "0x820006A4"
+        },
+        {
+          "first": "0x82A411D4",
+          "second": "0x820006A8"
+        },
+        {
+          "first": "0x82A411E4",
+          "second": "0x820006AC"
+        },
+        {
+          "first": "0x82A411F4",
+          "second": "0x820006B0"
+        },
+        {
+          "first": "0x82A41204",
+          "second": "0x820006B4"
+        },
+        {
+          "first": "0x82A41214",
+          "second": "0x820006B8"
+        },
+        {
+          "first": "0x82A41224",
+          "second": "0x820006BC"
+        },
+        {
+          "first": "0x82A41234",
+          "second": "0x820006C0"
+        },
+        {
+          "first": "0x82A41244",
+          "second": "0x820006C4"
+        },
+        {
+          "first": "0x82A41254",
+          "second": "0x820006C8"
+        },
+        {
+          "first": "0x82A41264",
+          "second": "0x820006CC"
+        },
+        {
+          "first": "0x82A41274",
+          "second": "0x820006D0"
+        },
+        {
+          "first": "0x82A41284",
+          "second": "0x820006D4"
+        },
+        {
+          "first": "0x82A41294",
+          "second": "0x820006D8"
+        },
+        {
+          "first": "0x82A412A4",
+          "second": "0x820006DC"
+        },
+        {
+          "first": "0x82A412B4",
+          "second": "0x820006E0"
+        },
+        {
+          "first": "0x82A412C4",
+          "second": "0x820006E4"
+        },
+        {
+          "first": "0x82A412D4",
+          "second": "0x820006E8"
+        },
+        {
+          "first": "0x82A40994",
+          "second": "0x820006EC"
+        },
+        {
+          "first": "0x82A40984",
+          "second": "0x820006F0"
+        },
+        {
+          "first": "0x82A40974",
+          "second": "0x820006F4"
+        },
+        {
+          "first": "0x82A40964",
+          "second": "0x820006F8"
+        },
+        {
+          "first": "0x82A40954",
+          "second": "0x820006FC"
+        },
+        {
+          "first": "0x82A40944",
+          "second": "0x82000700"
+        },
+        {
+          "first": "0x82A40934",
+          "second": "0x82000704"
+        },
+        {
+          "first": "0x82000708",
+          "second": "0x82A40924"
+        },
+        {
+          "first": "0x8200070C",
+          "second": "0x82A40914"
+        },
+        {
+          "first": "0x82000710",
+          "second": "0x82000714"
+        },
+        {
+          "first": "0x82A40904",
+          "second": "0x82000718"
+        },
+        {
+          "first": "0x82A408F4",
+          "second": "0x8200071C"
+        },
+        {
+          "first": "0x82A408E4",
+          "second": "0x82000720"
+        },
+        {
+          "first": "0x82A408D4",
+          "second": "0x82000724"
+        },
+        {
+          "first": "0x82A408C4",
+          "second": "0x82000728"
+        },
+        {
+          "first": "0x82A408B4",
+          "second": "0x8200072C"
+        },
+        {
+          "first": "0x82A408A4",
+          "second": "0x82000730"
+        },
+        {
+          "first": "0x82A40894",
+          "second": "0x82000734"
+        },
+        {
+          "first": "0x82A40884",
+          "second": "0x82000738"
+        },
+        {
+          "first": "0x82A40874",
+          "second": "0x8200073C"
+        },
+        {
+          "first": "0x82A40864",
+          "second": "0x82000740"
+        },
+        {
+          "first": "0x82A40854",
+          "second": "0x82000744"
+        },
+        {
+          "first": "0x82A40844",
+          "second": "0x82000748"
+        },
+        {
+          "first": "0x82A40834",
+          "second": "0x8200074C"
+        },
+        {
+          "first": "0x82A40824",
+          "second": "0x82000750"
+        },
+        {
+          "first": "0x82A40814",
+          "second": "0x82000754"
+        },
+        {
+          "first": "0x82A40804",
+          "second": "0x82000758"
+        },
+        {
+          "first": "0x8200075C",
+          "second": "0x82000760"
+        },
+        {
+          "first": "0x82A407F4",
+          "second": "0x82000764"
+        },
+        {
+          "first": "0x82A407E4",
+          "second": "0x82000768"
+        },
+        {
+          "first": "0x82A407D4",
+          "second": "0x8200076C"
+        },
+        {
+          "first": "0x82A40DA4",
+          "second": "0x7504C3D8"
+        },
+        {
+          "first": "0x0A2A9BB4",
+          "second": "0x4F2E9C98"
+        },
+        {
+          "first": "0x147DAC01",
+          "second": "0xBA776837"
+        },
+        {
+          "first": "0x725653F9",
+          "second": "0x91EEA55A"
+        },
+        {
+          "first": "0x2EC1C334",
+          "second": "0xBFD3B089"
+        },
+        {
+          "first": "0x73D2A6F4",
+          "second": "0xBC028254"
+        },
+        {
+          "first": "0x29C45EAA",
+          "second": "0x7A57EDB1"
+        },
+        {
+          "first": "0x689F62DC",
+          "second": "0xB011FB36"
+        },
+        {
+          "first": "0x80D685B0",
+          "second": "0xC67AAAFF"
+        },
+        {
+          "first": "0x852EE558",
+          "second": "0xE0297DA5"
+        },
+        {
+          "first": "0x8CC6509A",
+          "second": "0xAFFB81CB"
+        },
+        {
+          "first": "0x3210993A",
+          "second": "0x2DFFA962"
+        },
+        {
+          "first": "0x2AC96D63",
+          "second": "0x02C2F3B7"
+        },
+        {
+          "first": "0x3A7D7A0A",
+          "second": "0xA4932913"
+        },
+        {
+          "first": "0xD3BDBCC2",
+          "second": "0x283E41B5"
+        },
+        {
+          "first": "0xC207DC1B",
+          "second": "0x6C6070BE"
+        },
+        {
+          "first": "0x5CEF56F9",
+          "second": "0x8B19A4D3"
+        },
+        {
+          "first": "0x4637F775",
+          "second": "0x48ED5D68"
+        },
+        {
+          "first": "0x9C7BDF2C",
+          "second": "0x47F16CCC"
+        },
+        {
+          "first": "0x159E97A7",
+          "second": "0x5C50EFB5"
+        },
+        {
+          "first": "0xB2C36C7E",
+          "second": "0x8270CBED"
+        },
+        {
+          "first": "0x2DC59F59",
+          "second": "0xA1252EDA"
+        },
+        {
+          "first": "0xDB21395C",
+          "second": "0xF2936E82"
+        },
+        {
+          "first": "0xBCFBBF04",
+          "second": "0x27366EC3"
+        },
+        {
+          "first": "0xF65229E9",
+          "second": "0x7963CEF5"
+        },
+        {
+          "first": "0xD382ED24",
+          "second": "0x8D97FEE4"
+        },
+        {
+          "first": "0xDF703BE5",
+          "second": "0x4AFC9693"
+        },
+        {
+          "first": "0xB1890F20",
+          "second": "0xDE66F803"
+        },
+        {
+          "first": "0x55897AF1",
+          "second": "0x74BAA6CA"
+        },
+        {
+          "first": "0x9DD38052",
+          "second": "0xE78B1060"
+        },
+        {
+          "first": "0x20F3A2CC",
+          "second": "0x097E0C80"
+        },
+        {
+          "first": "0xB13C98D9",
+          "second": "0x4CDF5C8B"
+        },
+        {
+          "first": "0xBFDA5D88",
+          "second": "0x9350E586"
+        },
+        {
+          "first": "0xEA07129B",
+          "second": "0x92FC5751"
+        },
+        {
+          "first": "0xF905037F",
+          "second": "0x051383AB"
+        },
+        {
+          "first": "0xBBBC79C6",
+          "second": "0xD565A3D6"
+        },
+        {
+          "first": "0x7E91B484",
+          "second": "0x8EFD522D"
+        },
+        {
+          "first": "0xE3883CA9",
+          "second": "0xD92CB929"
+        },
+        {
+          "first": "0xD6C9E3FC",
+          "second": "0x742D0DFD"
+        },
+        {
+          "first": "0x3FD50886",
+          "second": "0x6C316B14"
+        },
+        {
+          "first": "0x7F700F15",
+          "second": "0xE9536CCE"
+        },
+        {
+          "first": "0xCD91EA87",
+          "second": "0x39E06D52"
+        },
+        {
+          "first": "0x9DE0C015",
+          "second": "0xC726B23F"
+        },
+        {
+          "first": "0xDAFCECE4",
+          "second": "0xF2E98213"
+        },
+        {
+          "first": "0x50650FBE",
+          "second": "0x147AE70A"
+        },
+        {
+          "first": "0x2153151C",
+          "second": "0x4F4ED583"
+        },
+        {
+          "first": "0xA1393372",
+          "second": "0x54EEC5C2"
+        },
+        {
+          "first": "0x3B461E07",
+          "second": "0x1D8528FA"
+        },
+        {
+          "first": "0x0B87E092",
+          "second": "0x0D4C63F9"
+        },
+        {
+          "first": "0x36E78636",
+          "second": "0x79EDB3CC"
+        },
+        {
+          "first": "0x57C008FA",
+          "second": "0x8A375AAD"
+        },
+        {
+          "first": "0x01F20525",
+          "second": "0x759B4C61"
+        },
+        {
+          "first": "0xAFD73602",
+          "second": "0x2257DCC9"
+        },
+        {
+          "first": "0x06DF0DC4",
+          "second": "0xC60A12D6"
+        },
+        {
+          "first": "0x7F8FA1DE",
+          "second": "0x86C26576"
+        },
+        {
+          "first": "0x08F24625",
+          "second": "0x087536D8"
+        },
+        {
+          "first": "0x8DAD0B08",
+          "second": "0x2B2802CB"
+        },
+        {
+          "first": "0x11C9506C",
+          "second": "0x9474063C"
+        },
+        {
+          "first": "0xDA7E8828",
+          "second": "0xB97B0B66"
+        },
+        {
+          "first": "0xB081F472",
+          "second": "0x67F453BA"
+        },
+        {
+          "first": "0xF6F63B68",
+          "second": "0x60D3155C"
+        },
+        {
+          "first": "0x6A1B60C2",
+          "second": "0xA060AF05"
+        },
+        {
+          "first": "0x8014F90D",
+          "second": "0xC108957A"
+        },
+        {
+          "first": "0xDC0DC270",
+          "second": "0x02A0850B"
+        },
+        {
+          "first": "0xF31B5B23",
+          "second": "0xD266D093"
+        },
+        {
+          "first": "0xAEC8000D",
+          "second": "0x40913BE4"
+        },
+        {
+          "first": "0x6B30F7A7",
+          "second": "0x5FD30350"
+        },
+        {
+          "first": "0xC158317D",
+          "second": "0x74490600"
+        },
+        {
+          "first": "0x3D631FC5",
+          "second": "0xC7B350EF"
+        },
+        {
+          "first": "0x1FD61EBE",
+          "second": "0xD2ED5AD3"
+        },
+        {
+          "first": "0xD649B27B",
+          "second": "0xC0E3080F"
+        },
+        {
+          "first": "0x069A7FDF",
+          "second": "0x8D298C96"
+        },
+        {
+          "first": "0x59ADD394",
+          "second": "0xD889F900"
+        },
+        {
+          "first": "0xE5E6021A",
+          "second": "0xF515E34D"
+        },
+        {
+          "first": "0xCB09C407",
+          "second": "0x440A67C5"
+        },
+        {
+          "first": "0x252FD0A2",
+          "second": "0xAA3A9C03"
+        },
+        {
+          "first": "0x6A3889D4",
+          "second": "0xBD51B8B4"
+        },
+        {
+          "first": "0x22806E46",
+          "second": "0x0336A3E5"
+        },
+        {
+          "first": "0x84EC3022",
+          "second": "0x8AF033B3"
+        },
+        {
+          "first": "0xD43E31B4",
+          "second": "0xA13C417D"
+        },
+        {
+          "first": "0x67376F97",
+          "second": "0xE073E3E0"
+        },
+        {
+          "first": "0x15DEBAEA",
+          "second": "0x406D64DE"
+        },
+        {
+          "first": "0xD93B1545",
+          "second": "0xE79126F6"
+        },
+        {
+          "first": "0xDEE81E35",
+          "second": "0x4F600BD3"
+        },
+        {
+          "first": "0x1DAC1A81",
+          "second": "0xADF99CDE"
+        },
+        {
+          "first": "0x8E4E762E",
+          "second": "0xB3F77DBF"
+        },
+        {
+          "first": "0xA7F5B19A",
+          "second": "0xA519BD7B"
+        },
+        {
+          "first": "0x5CA70C0C",
+          "second": "0xC7290178"
+        },
+        {
+          "first": "0xAE1283FB",
+          "second": "0xD5C29FE2"
+        },
+        {
+          "first": "0x2325E90D",
+          "second": "0x69CB2131"
+        },
+        {
+          "first": "0xDA1C8018",
+          "second": "0xC0DC1EF3"
+        },
+        {
+          "first": "0xDC03BA8A",
+          "second": "0x891E9BAA"
+        },
+        {
+          "first": "0x3BECB770",
+          "second": "0x0B1C2F55"
+        },
+        {
+          "first": "0x32900FDD",
+          "second": "0x938FF763"
+        },
+        {
+          "first": "0x13A2BF39",
+          "second": "0x05A6F86D"
+        },
+        {
+          "first": "0x11D7FF5A",
+          "second": "0x2B3F322F"
+        },
+        {
+          "first": "0x2C9EA5FF",
+          "second": "0xF232CF4C"
+        },
+        {
+          "first": "0x23DC8BDD",
+          "second": "0xA484E4D5"
+        },
+        {
+          "first": "0x33156511",
+          "second": "0xD842FE5F"
+        },
+        {
+          "first": "0xC5E3F440",
+          "second": "0x428E439C"
+        },
+        {
+          "first": "0x6EBA4082",
+          "second": "0x8AE9C260"
+        },
+        {
+          "first": "0x5F8D868C",
+          "second": "0x21ADE124"
+        },
+        {
+          "first": "0xFFACA5EB",
+          "second": "0x74599697"
+        },
+        {
+          "first": "0x77BCE824",
+          "second": "0xDCF7E260"
+        },
+        {
+          "first": "0xDECAD140",
+          "second": "0xB41BFC5C"
+        },
+        {
+          "first": "0x42BFBD22",
+          "second": "0x631888DE"
+        },
+        {
+          "first": "0xFF4BFA6A",
+          "second": "0x68AB8E0A"
+        },
+        {
+          "first": "0x850AC519",
+          "second": "0xB89F9A4F"
+        },
+        {
+          "first": "0xB477206A",
+          "second": "0xA37896B9"
+        },
+        {
+          "first": "0x4246CE04",
+          "second": "0x0EE19D1B"
+        },
+        {
+          "first": "0xBDCC8912",
+          "second": "0xFB0B3A1B"
+        },
+        {
+          "first": "0x3765DC58",
+          "second": "0x6642FA58"
+        },
+        {
+          "first": "0x73E30226",
+          "second": "0x9DA04043"
+        },
+        {
+          "first": "0x71E76280",
+          "second": "0x8BB116CC"
+        },
+        {
+          "first": "0x43F5A35B",
+          "second": "0x6254B3B6"
+        },
+        {
+          "first": "0xFC81747E",
+          "second": "0xEC84245E"
+        },
+        {
+          "first": "0x617F49EC",
+          "second": "0x527C0153"
+        },
+        {
+          "first": "0xBC670800",
+          "second": "0x2651867B"
+        },
+        {
+          "first": "0xAA04BC81",
+          "second": "0xCBB8828C"
+        },
+        {
+          "first": "0x45C1991C",
+          "second": "0x7F352497"
+        },
+        {
+          "first": "0xE92EC58F",
+          "second": "0x35F0FD6A"
+        },
+        {
+          "first": "0x4966EC76",
+          "second": "0x23EA3934"
+        },
+        {
+          "first": "0xAF86F8EE",
+          "second": "0x69278D52"
+        },
+        {
+          "first": "0x8525E70B",
+          "second": "0x56C1593D"
+        },
+        {
+          "first": "0x9A9E1E38",
+          "second": "0xE53608DC"
+        },
+        {
+          "first": "0x897F3B42",
+          "second": "0x114F64B1"
+        },
+        {
+          "first": "0x5BFD6047",
+          "second": "0x849632FD"
+        },
+        {
+          "first": "0xEA5CA7BD",
+          "second": "0xEA67A06D"
+        },
+        {
+          "first": "0x21682D95",
+          "second": "0xE366EE5C"
+        },
+        {
+          "first": "0xF8CD92B4",
+          "second": "0x71191C7F"
+        },
+        {
+          "first": "0xCF2D3EDB",
+          "second": "0xA20FE6A5"
+        },
+        {
+          "first": "0x6F3404FD",
+          "second": "0x44B4DA3C"
+        },
+        {
+          "first": "0xC149D177",
+          "second": "0x21DC9BA0"
+        },
+        {
+          "first": "0x2DD01D67",
+          "second": "0x4EC94E6B"
+        },
+        {
+          "first": "0xFE59D790",
+          "second": "0x1A281146"
+        },
+        {
+          "first": "0x0C506EEA",
+          "second": "0x8AE9B5BC"
+        },
+        {
+          "first": "0xAA02A5A1",
+          "second": "0x1EC44963"
+        },
+        {
+          "first": "0x407ABE1B",
+          "second": "0xE3636F45"
+        },
+        {
+          "first": "0x433707DA",
+          "second": "0xBB7EDC3E"
+        },
+        {
+          "first": "0xEE0C86F1",
+          "second": "0x3795D6C9"
+        },
+        {
+          "first": "0xF91361A3",
+          "second": "0x77500F41"
+        },
+        {
+          "first": "0xC9F1BDE3",
+          "second": "0x027A34F3"
+        },
+        {
+          "first": "0x61201395",
+          "second": "0x64343C29"
+        },
+        {
+          "first": "0xC1666ABB",
+          "second": "0x5E4181F3"
+        },
+        {
+          "first": "0xA54421BF",
+          "second": "0x2FA3DE44"
+        },
+        {
+          "first": "0x0F62ABD1",
+          "second": "0x1213FE60"
+        },
+        {
+          "first": "0x5E181BEA",
+          "second": "0xCCECE323"
+        },
+        {
+          "first": "0xFAA334F2",
+          "second": "0x10EB0488"
+        },
+        {
+          "first": "0x417FB15F",
+          "second": "0x3BB42F20"
+        },
+        {
+          "first": "0xD25004CC",
+          "second": "0x342DF50D"
+        },
+        {
+          "first": "0x26B1F469",
+          "second": "0x85891D83"
+        },
+        {
+          "first": "0x28910512",
+          "second": "0xAEB1B8FE"
+        },
+        {
+          "first": "0x4B24A9B7",
+          "second": "0xF96B6012"
+        },
+        {
+          "first": "0x229AFFF7",
+          "second": "0x6DB0E5DC"
+        },
+        {
+          "first": "0x8205A4FD",
+          "second": "0x412DA41E"
+        },
+        {
+          "first": "0xF6EC0004",
+          "second": "0x569B8A0E"
+        },
+        {
+          "first": "0x046A85D1",
+          "second": "0xCC4BB4CF"
+        },
+        {
+          "first": "0x985F7297",
+          "second": "0x2EB90751"
+        },
+        {
+          "first": "0xA20E79D0",
+          "second": "0x902BF3D5"
+        },
+        {
+          "first": "0x8F29E3C5",
+          "second": "0x6C47E0A4"
+        },
+        {
+          "first": "0x0E68DABC",
+          "second": "0x5694A1BD"
+        },
+        {
+          "first": "0x7D61B51D",
+          "second": "0x9A5D8AEE"
+        },
+        {
+          "first": "0x17E0B370",
+          "second": "0xA541709A"
+        }
+      ]
+    }
+  ],
+  "summary": {
+    "title_id": "0x545407D8",
+    "version": "5454",
+    "xdk_builds": [
+      5426
+    ],
+    "base_address": "0x82000000",
+    "entry_point": null,
+    "import_library_count": 2,
+    "total_import_records": 427
+  }
+}

@@ -1,0 +1,44 @@
+plugins {
+    id 'com.android.application'
+    id 'org.jetbrains.kotlin.android'
+}
+
+android {
+    namespace 'com.bioshock1.recomp'
+    compileSdk 34
+    ndkVersion '30.0.16248370'
+
+    defaultConfig {
+        applicationId "com.bioshock1.recomp"
+        minSdk 28
+        targetSdk 34
+        versionCode 1
+        versionName "0.2.0-real-runtime"
+
+        ndk {
+            abiFilters 'arm64-v8a'
+        }
+    }
+
+
+    buildTypes {
+        release {
+            minifyEnabled false
+            proguardFiles getDefaultProguardFile('proguard-android-optimize.txt')
+        }
+    }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+    kotlinOptions {
+        jvmTarget = '17'
+    }
+}
+
+dependencies {
+    implementation 'androidx.core:core-ktx:1.13.1'
+    implementation 'androidx.appcompat:appcompat:1.6.1'
+    implementation 'androidx.activity:activity-ktx:1.9.0'
+}

@@ -1,0 +1,68 @@
+# ============================================================
+# Game data and proprietary reference material - NEVER commit
+# ============================================================
+_game/
+_reference/
+*.iso
+*.7z
+*.xex
+*.fsb
+*.u
+xbox360-bios-v10.bin
+
+# ============================================================
+# Large upstream toolchains / SDK sources (fetched at build time)
+# ============================================================
+tools-bin/
+
+# The SDK source tree, its submodules and build outputs are fetched/cloned
+# separately. Only the dependency notes in this directory are tracked.
+third_party/*
+!third_party/README.md
+
+# Codegen workspaces and build outputs (reproducible via tools/ and scripts/)
+build/
+.gradle/
+android/.gradle/
+android/local.properties
+android/app/build/
+android/app/.cxx/
+android/build/
+recomp/generated/
+
+# The JNI bridge source lives under _work/ in the working tree; keep just it.
+_work/*
+!_work/rexglue-android-app/
+!_work/rexglue-android-app/**
+_work/rexglue-android-app/build/
+
+# Staged native libraries (built from source by the pipeline)
+*.so
+*.a
+*.dll
+*.dylib
+*.exe
+*.apk
+*.zip
+android/app/src/main/jniLibs/
+
+# ============================================================
+# Generated docs database / verification reports
+# ============================================================
+web/docs.db
+web/docs.sql
+web/verify_report.json
+
+# ============================================================
+# IDE / OS / Python
+# ============================================================
+.idea/
+.vscode/
+*.iml
+*.log
+Thumbs.db
+Desktop.ini
+.DS_Store
+__pycache__/
+*.pyc
+.venv/

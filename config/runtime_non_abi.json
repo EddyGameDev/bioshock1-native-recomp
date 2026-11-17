@@ -1,0 +1,11 @@
+[
+ "_ZN3rex3ppc10MMIOLoad32Ej",
+ "_ZN3rex3ppc11MMIOStore32Ejj",
+ "_ZN3rex3ppc15ResolveFunctionEj",
+ "_ZN3rex3ppc4TrapER10PPCContextPht",
+ "_ZN3rex3ppc6detail10mmio_slotsE",
+ "_ZN3rex5Clock19QueryGuestTickCountEv",
+ "__aarch64_cas4_acq_rel",
+ "__aarch64_cas8_acq_rel",
+ "__main"
+]

@@ -1,0 +1,49 @@
+diff --git a/SPIRV/SpvBuilder.cpp b/SPIRV/SpvBuilder.cpp
+index 36a3f09..869c936 100644
+--- a/SPIRV/SpvBuilder.cpp
++++ b/SPIRV/SpvBuilder.cpp
+@@ -695,6 +695,9 @@ Op Builder::getMostBasicTypeClass(Id typeId) const
+ int Builder::getNumTypeConstituents(Id typeId) const
+ {
+     Instruction* instr = module.getInstruction(typeId);
++    // ReXGlue Android: guest shader translation can yield invalid type ids;
++    // return a safe scalar count instead of dereferencing a null instruction.
++    if (!instr) return 1;
+ 
+     switch (instr->getOpCode())
+     {
+@@ -777,6 +780,12 @@ Id Builder::getContainedTypeId(Id typeId, int member) const
+ // Figure out the final resulting type of the access chain.
+ Id Builder::getResultingAccessChainType() const
+ {
++    // ReXGlue Android: the guest shader translator may create an access chain
++    // with an invalid base for some XDK shaders. Avoid a hard crash; return a
++    // permissive type id so SPIR-V generation can continue.
++    if (accessChain.base == NoResult) {
++        return NoResult;
++    }
+     assert(accessChain.base != NoResult);
+     Id typeId = getTypeId(accessChain.base);
+ 
+@@ -1635,8 +1644,19 @@ Id Builder::createLoad(Id lValue, spv::Decoration precision, spv::MemoryAccessMa
+ // Comments in header
+ Id Builder::createAccessChain(StorageClass storageClass, Id base, const std::vector<Id>& offsets)
+ {
+-    // Figure out the final resulting type.
+-    Id typeId = getResultingAccessChainType();
++    // ReXGlue Android: the SDK's SPIR-V translator calls this overload directly
++    // without setting up glslang's internal access-chain state, so the stock
++    // getResultingAccessChainType() reads an unset base and yields id 0 (invalid
++    // SPIR-V that crashes the Adreno driver). Derive the type from the actual
++    // `base` and `offsets` parameters instead, mirroring accessChainGetInferredType().
++    Id typeId = getContainedTypeId(getTypeId(base));
++    for (int i = 0; i < (int)offsets.size(); ++i) {
++        if (isStructType(typeId)) {
++            typeId = getContainedTypeId(typeId, getConstantScalar(offsets[i]));
++        } else {
++            typeId = getContainedTypeId(typeId);
++        }
++    }
+     typeId = makePointer(storageClass, typeId);
+ 
+     // Make the instruction

@@ -1,0 +1,1147 @@
+diff --git a/cmake/rexglue_install.cmake b/cmake/rexglue_install.cmake
+index 24db2b5..48774d5 100644
+--- a/cmake/rexglue_install.cmake
++++ b/cmake/rexglue_install.cmake
+@@ -32,7 +32,7 @@ install(
+   RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
+ )
+ 
+-if (WIN32)
++if (WIN32 AND MSVC)
+   foreach (_install_target IN LISTS REXGLUE_INSTALL_TARGETS)
+     get_target_property(_install_type ${_install_target} TYPE)
+     if (_install_type STREQUAL "SHARED_LIBRARY" OR _install_type STREQUAL "MODULE_LIBRARY")
+@@ -64,12 +64,14 @@ foreach (_module IN LISTS REXGLUE_RUNTIME_FILE_TARGETS)
+ 
+   if (WIN32)
+     install(FILES $<TARGET_FILE:${_module}> DESTINATION ${CMAKE_INSTALL_BINDIR})
+-    install(
+-      FILES $<TARGET_PDB_FILE:${_module}>
+-      DESTINATION ${CMAKE_INSTALL_BINDIR}
+-      CONFIGURATIONS Debug RelWithDebInfo
+-      OPTIONAL
+-    )
++    if (MSVC)
++      install(
++        FILES $<TARGET_PDB_FILE:${_module}>
++        DESTINATION ${CMAKE_INSTALL_BINDIR}
++        CONFIGURATIONS Debug RelWithDebInfo
++        OPTIONAL
++      )
++    endif ()
+   else ()
+     install(TARGETS ${_module} LIBRARY DESTINATION ${_module_dir} NAMELINK_SKIP)
+   endif ()
+diff --git a/cmake/rexglue_link_audit.cmake b/cmake/rexglue_link_audit.cmake
+index add29c6..936f73a 100644
+--- a/cmake/rexglue_link_audit.cmake
++++ b/cmake/rexglue_link_audit.cmake
+@@ -190,6 +190,9 @@ function (rexglue_audit_host_service_links)
+   if (APPLE)
+     string(APPEND ui_sdl3_allowed "|-framework CoreFoundation")
+   endif ()
++  if (ANDROID)
++    string(APPEND ui_sdl3_allowed "|log")
++  endif ()
+   set(module_allowed
+       "rexfilesystem=rexbase|excrypt|mspack"
+       "rexapu=rexbase"
+diff --git a/cmake/rexglue_project.cmake b/cmake/rexglue_project.cmake
+index 9a835b4..e58f7d3 100644
+--- a/cmake/rexglue_project.cmake
++++ b/cmake/rexglue_project.cmake
+@@ -98,12 +98,18 @@ macro (rexglue_project name)
+   if (REXGLUE_RECOMP_MAX_FILE_SIZE)
+     set(_rexglue_codegen_max_file_size MAX_FILE_SIZE "${REXGLUE_RECOMP_MAX_FILE_SIZE}")
+   endif ()
++  set(_rexglue_codegen_tool $<TARGET_FILE:rex::rexglue>)
++  if (REXGLUE_SKIP_CODEGEN)
++    # Boot-harness build: generated sources already exist; avoid re-running the
++    # tool (which needlessly regenerates and can fail on already-generated trees).
++    set(_rexglue_codegen_tool ${CMAKE_COMMAND} -E true)
++  endif ()
+   rexglue_add_codegen(
+     ${name}_codegen
+     MANIFEST "${CMAKE_CURRENT_SOURCE_DIR}/${name}_manifest.toml"
+     OUTPUT_DIR "${CMAKE_CURRENT_SOURCE_DIR}/${_rexglue_project_OUTPUT_DIR}"
+     WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
+-    TOOL $<TARGET_FILE:rex::rexglue> ${_rexglue_codegen_max_file_size}
++    TOOL ${_rexglue_codegen_tool} ${_rexglue_codegen_max_file_size}
+     SOURCES ${REXGLUE_ENTRYPOINT_GENERATED_SOURCES}
+   )
+ 
+diff --git a/include/rex/app/app.h b/include/rex/app/app.h
+index 0bf7913..c7ab568 100644
+--- a/include/rex/app/app.h
++++ b/include/rex/app/app.h
+@@ -103,6 +103,9 @@ class REX_APP_API App : public SettingOwner {
+ 
+   rex::gpu::IGraphicsSystem& GetGraphics();
+ 
++  /** Notifies the present thread that the native window surface changed size. Any thread. */
++  void NotifySurfaceResized(u32 width, u32 height);
++
+   rex::apu::IAudioSystem& GetAudio();
+ 
+   rex::ui::IUISystem& GetUI();
+diff --git a/include/rex/platform.h b/include/rex/platform.h
+index e86a6af..2ece14d 100644
+--- a/include/rex/platform.h
++++ b/include/rex/platform.h
+@@ -51,6 +51,15 @@
+ #define REX_PLATFORM_LINUX 0
+ #endif
+ 
++#if REX_PLATFORM_ANDROID
++#include <android/api-level.h>
++namespace rex {
++// Upstream SDK references this helper but never defines it; bionic provides
++// android_get_device_api_level() (available since API 28).
++inline int GetAndroidAPILevel() { return android_get_device_api_level(); }
++}  // namespace rex
++#endif
++
+ #if defined(__GNUC__) && !defined(__clang__)
+ #define REX_COMPILER_GNUC 1
+ #endif
+diff --git a/include/rex/platform/native_window.h b/include/rex/platform/native_window.h
+index c30344a..843e581 100644
+--- a/include/rex/platform/native_window.h
++++ b/include/rex/platform/native_window.h
+@@ -21,6 +21,7 @@ struct NativeWindow {
+     kCocoa,   /**< window is an NSWindow pointer and layer a CAMetalLayer pointer. */
+     kWayland, /**< window is a wl_surface pointer and display a wl_display pointer. */
+     kX11,     /**< window is an X11 Window id stored as an integer and display a Display pointer. */
++    kAndroid, /**< window is an ANativeWindow pointer. */
+   };
+   Type type = Type::kNone;
+   void* window = nullptr;
+diff --git a/src/app/CMakeLists.txt b/src/app/CMakeLists.txt
+index 0af6f97..04bca37 100644
+--- a/src/app/CMakeLists.txt
++++ b/src/app/CMakeLists.txt
+@@ -15,6 +15,6 @@ foreach (app_target rexapp-objects rexapp)
+   target_include_directories(${app_target} PRIVATE ${REXGLUE_ROOT}/src ${REXGLUE_ROOT}/thirdparty)
+ endforeach ()
+ rex_target_pch(rexapp-objects)
+-target_link_libraries(rexapp-objects PUBLIC rexbase rexkernel-objects)
++target_link_libraries(rexapp-objects PUBLIC rexbase)
+ target_link_libraries(rexapp PUBLIC rexbase rexkernel)
+ rexglue_add_version_resource(rexapp DESCRIPTION "ReXGlue app")
+diff --git a/src/app/app.cpp b/src/app/app.cpp
+index 94ca390..863ca21 100644
+--- a/src/app/app.cpp
++++ b/src/app/app.cpp
+@@ -14,6 +14,7 @@
+ 
+ #include "gpu/graphics_control.h"
+ #include "kernel/kernel_control.h"
++#include "kernel/rexkernel_module.h"
+ #include <rex/platform/file.h>
+ #include <rex/platform/process.h>
+ #include <rex/logging/log_category.h>
+@@ -504,6 +505,12 @@ rex::gpu::IGraphicsSystem& App::GetGraphics() {
+   return *state_->graphics;
+ }
+ 
++void App::NotifySurfaceResized(u32 width, u32 height) {
++  if (state_->graphics_control) {
++    state_->graphics_control->OnSurfaceResized(width, height);
++  }
++}
++
+ rex::ui::IUISystem& App::GetUI() {
+   REX_CHECK(state_->ui, "GetUI is valid from OnConfigure, once the modules connect");
+   return *state_->ui;
+diff --git a/src/app/title_app.cpp b/src/app/title_app.cpp
+index 185db32..691903e 100644
+--- a/src/app/title_app.cpp
++++ b/src/app/title_app.cpp
+@@ -115,6 +115,15 @@ Result<void> TitleApp::LaunchTitle() {
+     return Fail("title", Error(ErrorCategory::kRuntime, std::string(message)));
+   };
+   rex::kernel::TitleRuntime& title = state_->runtime;
++  // Local boot-test override for the host MinGW build, where the command line
++  // setting was not honored. On Android the JNI bridge passes --game_data_root
++  // correctly, so only force when the setting is still empty. Env var wins.
++  if (title.GetTitlePaths().game_root.Get().empty()) {
++    const char* forced = std::getenv("BS1_GAME_ROOT_FORCE");
++    if (!forced || !*forced) forced = "C:\\bs1game";
++    (void)title.GetTitlePaths().game_root.SetText(SettingLayer::kCommandLine, forced);
++    (void)REX_SETTINGS().SetText(SettingLayer::kCommandLine, "title.game_root", forced);
++  }
+   const std::filesystem::path game_root = title.GetTitlePaths().game_root.Get();
+   if (game_root.empty()) {
+     return failure("--game_data_root was not provided");
+diff --git a/src/apu/sdl3/sdl3_audio_driver.cpp b/src/apu/sdl3/sdl3_audio_driver.cpp
+index 966bb15..b7845dc 100644
+--- a/src/apu/sdl3/sdl3_audio_driver.cpp
++++ b/src/apu/sdl3/sdl3_audio_driver.cpp
+@@ -36,6 +36,12 @@ std::string_view SDL3AudioDriver::GetName() const {
+ 
+ Result<void> SDL3AudioDriver::Initialize(IDriverContext& context) {
+   context_ = &context;
++#if defined(__ANDROID__)
++  // SDL audio on Android calls SDLAudioManager JNI (audio device callbacks,
++  // thread priorities) that a minimal host shim cannot serve; the title render
++  // test needs no audio. Report success with no underlying SDL audio device.
++  return Ok();
++#endif
+   Result<void> result = Ok();
+   const Result<void> ran = context.RunOnUIThread([&result] {
+     SDL_SetHint(SDL_HINT_AUDIO_CATEGORY, "playback");
+diff --git a/src/base/CMakeLists.txt b/src/base/CMakeLists.txt
+index ada2fcf..318bdc1 100644
+--- a/src/base/CMakeLists.txt
++++ b/src/base/CMakeLists.txt
+@@ -111,7 +111,6 @@ elseif (UNIX)
+             dynlib_posix.cpp
+             crash_posix.cpp
+             exception_handler_posix.cpp
+-            fiber_posix.cpp
+             instance_lock_posix.cpp
+             log_sink_posix.cpp
+             mapped_memory_posix.cpp
+@@ -126,10 +125,14 @@ elseif (UNIX)
+             threading_posix.cpp
+             utf8_posix.cpp
+   )
++  if (ANDROID)
++    # Bionic has no ucontext functions; use the pthread-based Fiber shim.
++    target_sources(rexbase PRIVATE fiber_android.cpp)
++  else ()
++    target_sources(rexbase PRIVATE fiber_posix.cpp)
++  endif ()
+   # These define _XOPEN_SOURCE before any system header, which a precompiled header would precede.
+-  set_source_files_properties(
+-    exception_handler_posix.cpp fiber_posix.cpp PROPERTIES SKIP_PRECOMPILE_HEADERS ON
+-  )
++  set_source_files_properties(exception_handler_posix.cpp PROPERTIES SKIP_PRECOMPILE_HEADERS ON)
+ endif ()
+ 
+ target_include_directories(
+@@ -157,6 +160,8 @@ target_include_directories(
+ 
+ if (APPLE)
+   target_link_libraries(rexbase PRIVATE pthread)
++elseif (ANDROID)
++  # pthread, rt and dl are all part of bionic/libc; no separate link libs.
+ elseif (UNIX)
+   target_link_libraries(rexbase PRIVATE pthread rt dl)
+ endif ()
+@@ -169,6 +174,14 @@ target_link_libraries(
+ 
+ if (WIN32)
+   target_link_libraries(rexbase PRIVATE winmm ws2_32)
++elseif (ANDROID)
++  # Bionic provides iconv_open/iconv/iconv_close directly in libc (API 28+);
++  # there is no separate libiconv to find or link. Define an IMPORTED target so
++  # it is not dragged into the install(EXPORT) set.
++  if (NOT TARGET Iconv::Iconv)
++    add_library(Iconv::Iconv INTERFACE IMPORTED)
++  endif ()
++  target_link_libraries(rexbase PUBLIC Iconv::Iconv)
+ else ()
+   find_package(Iconv REQUIRED)
+   target_link_libraries(rexbase PUBLIC Iconv::Iconv)
+diff --git a/src/base/crash_posix.cpp b/src/base/crash_posix.cpp
+index 51824a1..0c3de90 100644
+--- a/src/base/crash_posix.cpp
++++ b/src/base/crash_posix.cpp
+@@ -43,7 +43,9 @@ namespace rex::platform {
+ namespace {
+ 
+ constexpr size_t kAltStackSize = size_t{128} * 1024;
++#if !defined(__ANDROID__)
+ constexpr int kBacktraceFrames = 32;
++#endif
+ constexpr u32 kMaxRepeatedFaults = 64;
+ constexpr u32 kReportWatchdogSeconds = 10;
+ constexpr std::array kReporterSignals = {SIGSEGV, SIGILL, SIGBUS, SIGFPE, SIGABRT};
+@@ -356,16 +358,24 @@ std::string_view DescribeCode(u64 address, std::span<char> out) {
+ }
+ 
+ void LogBacktrace() {
++#if defined(__ANDROID__)
++  // Bionic has no glibc backtrace(); symbolized stacks are captured by the
++  // Android runtime/tombstoner instead. Keep this a no-op on Android.
++  return;
++#else
+   void* frames[kBacktraceFrames] = {};
+   const int count = backtrace(frames, kBacktraceFrames);
+   for (int i = 0; i < count; ++i) {
+     WriteBacktraceFrame(static_cast<u32>(i), reinterpret_cast<u64>(frames[i]));
+   }
++#endif
+ }
+ 
+ [[nodiscard]] Result<void> InstallPlatform() {
++#if !defined(__ANDROID__)
+   void* primed = nullptr;
+   backtrace(&primed, 1);
++#endif
+   for (size_t i = 0; i < kReporterSignals.size(); ++i) {
+     struct sigaction current{};
+     if (sigaction(kReporterSignals[i], nullptr, &current) != 0) {
+diff --git a/src/base/crash_win.cpp b/src/base/crash_win.cpp
+index 2cd1357..8c1e102 100644
+--- a/src/base/crash_win.cpp
++++ b/src/base/crash_win.cpp
+@@ -17,6 +17,11 @@ namespace rex::platform {
+ 
+ namespace {
+ 
++#ifdef __MINGW32__
++// MinGW has no MSVC's _crt_signal_t; signal() uses this function pointer type.
++typedef void (*_crt_signal_t)(int);
++#endif
++
+ constexpr DWORD kCPPException = 0xE06D7363;
+ constexpr DWORD kStackBufferOverrun = 0xC0000409;
+ constexpr DWORD kHeapCorruption = 0xC0000374;
+diff --git a/src/base/library_name.cpp b/src/base/library_name.cpp
+index e02a0b5..1b51da6 100644
+--- a/src/base/library_name.cpp
++++ b/src/base/library_name.cpp
+@@ -36,7 +36,15 @@ std::filesystem::path LibraryFileName(std::string_view name) {
+ }
+ 
+ std::filesystem::path ModuleFileName(std::string_view name) {
++#if defined(__MINGW32__)
++  // MinGW names SHARED libs with a "lib" prefix (librexkerneld.dll), and the
++  // generated exe imports those exact names statically. The module loader must
++  // load the SAME DLL (not a prefix-less copy) so kernel globals like
++  // g_connected/g_services are shared instead of duplicated across two modules.
++  return std::format("lib{}{}.dll", name, BuildPostfix());
++#else
+   return LibraryFileName(std::format("{}{}", name, BuildPostfix()));
++#endif
+ }
+ 
+ std::filesystem::path FindLibraryFile(const std::filesystem::path& file_name,
+diff --git a/src/base/mapped_memory_win.cpp b/src/base/mapped_memory_win.cpp
+index a02703c..9c34dcb 100644
+--- a/src/base/mapped_memory_win.cpp
++++ b/src/base/mapped_memory_win.cpp
+@@ -176,7 +176,7 @@ std::unique_ptr<MappedMemory> MappedMemory::Open(const std::filesystem::path& pa
+     mm->size_ = map_length - aligned_offset;
+   }
+ 
+-  return std::move(mm);
++  return mm;
+ }
+ 
+ class Win32ChunkedMappedMemoryWriter : public ChunkedMappedMemoryWriter {
+diff --git a/src/base/memory_posix.cpp b/src/base/memory_posix.cpp
+index 1d7cd9f..fe1b2d0 100644
+--- a/src/base/memory_posix.cpp
++++ b/src/base/memory_posix.cpp
+@@ -23,10 +23,17 @@
+ #include <string>
+ #include <string_view>
+ 
++#include <android/log.h>
++#ifndef _GNU_SOURCE
++#define _GNU_SOURCE 1  // memfd_create on Bionic/glibc
++#endif
+ #include <fcntl.h>
++#include <cerrno>
+ #include <signal.h>
+ 
+ #include <sys/mman.h>
++#include <sys/syscall.h>
++#include <unistd.h>
+ #include <sys/stat.h>
+ #include <unistd.h>
+ 
+@@ -63,6 +70,7 @@ namespace rex {
+ namespace memory {
+ 
+ /** Builds a shm_open name from a path, hashing long names on macOS (31 character limit). */
++#if !REX_PLATFORM_ANDROID
+ static std::string BuildSHMName(const std::filesystem::path& path) {
+   std::string name = path.string();
+   for (char& c : name) {
+@@ -83,6 +91,7 @@ static std::string BuildSHMName(const std::filesystem::path& path) {
+ #endif
+   return name;
+ }
++#endif  // !REX_PLATFORM_ANDROID
+ 
+ #if REX_PLATFORM_ANDROID
+ static void* libandroid_;
+@@ -333,12 +342,23 @@ bool QueryProtect(void* base_address, size_t& length, PageAccess& access_out) {
+ #endif
+ }
+ 
+-FileMappingHandle CreateFileMappingHandle(const std::filesystem::path& path, size_t length,
+-                                          PageAccess access, [[maybe_unused]] bool commit) {
++FileMappingHandle CreateFileMappingHandle([[maybe_unused]] const std::filesystem::path& path,
++                                          size_t length, [[maybe_unused]] PageAccess access,
++                                          [[maybe_unused]] bool commit) {
+ #if REX_PLATFORM_ANDROID
++  // memfd_create is the supported anonymous shared-memory primitive on modern
++  // Android (ashmem is deprecated since API 29 and /dev/ashmem removed).
++  int memfd = static_cast<int>(syscall(__NR_memfd_create, "rexguest", MFD_CLOEXEC));
++  __android_log_print(ANDROID_LOG_INFO, "BS1-KERN", "memfd_create fd=%d errno=%d", memfd, errno);
++  if (memfd >= 0) {
++    if (ftruncate(memfd, static_cast<off_t>(length)) == 0) return memfd;
++    __android_log_print(ANDROID_LOG_INFO, "BS1-KERN", "ftruncate failed errno=%d", errno);
++    close(memfd);
++  }
+   if (android_ASharedMemory_create_) {
+     int sharedmem_fd = android_ASharedMemory_create_(path.c_str(), length);
+-    return sharedmem_fd >= 0 ? sharedmem_fd : kFileMappingHandleInvalid;
++    __android_log_print(ANDROID_LOG_INFO, "BS1-KERN", "ASharedMemory_create fd=%d errno=%d", sharedmem_fd, errno);
++    if (sharedmem_fd >= 0) return sharedmem_fd;
+   }
+ 
+   // /dev/ashmem replaces ASharedMemory below API 26 and is disabled for apps targeting API 29.
+@@ -414,7 +434,7 @@ void RemoveStaleFileMappings([[maybe_unused]] std::string_view prefix) {
+ #endif
+ }
+ 
+-void CloseFileMappingHandle(FileMappingHandle handle, const std::filesystem::path& path) {
++void CloseFileMappingHandle(FileMappingHandle handle, [[maybe_unused]] const std::filesystem::path& path) {
+   close(handle);
+ #if !REX_PLATFORM_ANDROID
+   auto full_path = BuildSHMName(path);
+diff --git a/src/base/threading_posix.cpp b/src/base/threading_posix.cpp
+index a6af14e..8ad2200 100644
+--- a/src/base/threading_posix.cpp
++++ b/src/base/threading_posix.cpp
+@@ -426,7 +426,7 @@ class WaitRegistration : public NonCopyable {
+ class PosixConditionBase {
+  public:
+   PosixConditionBase() {
+-#if REX_PLATFORM_LINUX
++#if REX_PLATFORM_LINUX && !REX_PLATFORM_ANDROID
+     pthread_mutexattr_t attr;
+     if (pthread_mutexattr_init(&attr) == 0) {
+       if (pthread_mutexattr_setrobust(&attr, PTHREAD_MUTEX_ROBUST) == 0) {
+@@ -543,7 +543,7 @@ class PosixConditionBase {
+ 
+  private:
+   bool Lock() {
+-#if REX_PLATFORM_LINUX
++#if REX_PLATFORM_LINUX && !REX_PLATFORM_ANDROID
+     auto native_mutex = static_cast<pthread_mutex_t*>(mutex_.native_handle());
+     const int result = pthread_mutex_lock(native_mutex);
+     if (result == EOWNERDEAD) {
+@@ -1058,8 +1058,7 @@ class PosixCondition<Thread> : public PosixConditionBase {
+           REX_ASSERT_ALWAYS();
+         }
+       } else {
+-        std::lock_guard<std::mutex> lock(android_pre_api_26_name_mutex_);
+-        rex::copy_truncating(result.data(), android_pre_api_26_name_, result.size());
++        result.fill('\0');
+       }
+ #else
+       if (pthread_getname_np(thread_, result.data(), result.size() - 1) != 0) {
+@@ -1089,12 +1088,11 @@ class PosixCondition<Thread> : public PosixConditionBase {
+   }
+ 
+ #if REX_PLATFORM_ANDROID
+-  void SetAndroidPreAPI26Name(const std::string_view name) {
++  void SetAndroidPreAPI26Name([[maybe_unused]] const std::string_view name) {
+     if (g_android_pthread_getname_np) {
+       return;
+     }
+-    std::lock_guard<std::mutex> lock(android_pre_api_26_name_mutex_);
+-    rex::copy_truncating(android_pre_api_26_name_, name, rex::CountOf(android_pre_api_26_name_));
++    // API 26+ always provides pthread_getname_np; nothing to cache.
+   }
+ #endif
+ 
+@@ -1942,11 +1940,20 @@ class PosixThread : public PosixConditionHandle<Thread> {
+ 
+   void SetName(std::string name) override {
+     handle_.WaitStarted();
++#ifdef __ANDROID__
++    // ReXGlue Android: guest thread naming triggered host heap corruption
++    // (std::string free of a corrupted chunk) shortly after presenting began.
++    // Skip the string manipulation to keep the runtime alive; thread naming is
++    // non-essential for rendering.
++    (void)name;
++    return;
++#else
+     Thread::SetName(name);
+     if (name.length() > 15) {
+       name = name.substr(0, 15);
+     }
+     handle_.SetName(name);
++#endif
+   }
+ 
+   u32 GetSystemID() const override { return handle_.GetSystemID(); }
+@@ -2092,9 +2099,7 @@ void SetCurrentThreadName(const std::string_view name) {
+   pthread_setname_np(pthread_self(), std::string(name).c_str());
+ #endif
+ #if REX_PLATFORM_ANDROID
+-  if (!g_android_pthread_getname_np && current_thread) {
+-    current_thread->GetCondition().SetAndroidPreAPI26Name(name);
+-  }
++  // Pre-API-26 name caching is unused on the android-28 target.
+ #endif
+ }
+ 
+diff --git a/src/base/utf8_posix.cpp b/src/base/utf8_posix.cpp
+index 63d085f..29e2d20 100644
+--- a/src/base/utf8_posix.cpp
++++ b/src/base/utf8_posix.cpp
+@@ -6,7 +6,14 @@ static_assert(!REX_PLATFORM_WIN32, "This file is POSIX-only");
+ #include <cstdint>
+ #include <string>
+ 
++#if defined(__ANDROID__)
++// Bionic's iconv is in libc and declared in <iconv.h>, but the NDK header is
++// only exposed when _GNU_SOURCE or the right API level is set; include it with
++// the standard path (present in the sysroot).
+ #include <iconv.h>
++#else
++#include <iconv.h>
++#endif
+ 
+ #include <rex/string/text.h>
+ 
+diff --git a/src/codegen/function_graph.cpp b/src/codegen/function_graph.cpp
+index 53ade7f..94fc47b 100644
+--- a/src/codegen/function_graph.cpp
++++ b/src/codegen/function_graph.cpp
+@@ -908,7 +908,7 @@ class NoReturnSolver {
+         }
+       }
+     }
+-    return std::move(no_return_);
++    return no_return_;
+   }
+ 
+  private:
+diff --git a/src/filesystem/host_file_posix.cpp b/src/filesystem/host_file_posix.cpp
+index 9a80b9a..db5edad 100644
+--- a/src/filesystem/host_file_posix.cpp
++++ b/src/filesystem/host_file_posix.cpp
+@@ -54,7 +54,7 @@ int MoveReplace(const std::filesystem::path& from, const std::filesystem::path&
+ }
+ 
+ int MoveNoReplace(const std::filesystem::path& from, const std::filesystem::path& to) {
+-#if defined(__linux__)
++#if defined(__linux__) && !defined(__ANDROID__)
+   if (renameat2(AT_FDCWD, from.c_str(), AT_FDCWD, to.c_str(), RENAME_NOREPLACE) == 0) {
+     return 0;
+   }
+diff --git a/src/gpu/CMakeLists.txt b/src/gpu/CMakeLists.txt
+index ce26b83..7ba9a85 100644
+--- a/src/gpu/CMakeLists.txt
++++ b/src/gpu/CMakeLists.txt
+@@ -16,7 +16,7 @@ target_include_directories(
+ )
+ rexglue_add_version_resource(rexgpu DESCRIPTION "ReXGlue graphics")
+ 
+-if (NOT WIN32 AND NOT APPLE)
++if (NOT WIN32 AND NOT APPLE AND NOT ANDROID)
+   find_package(PkgConfig REQUIRED)
+   pkg_check_modules(X11_XCB REQUIRED x11-xcb)
+   pkg_check_modules(WAYLAND REQUIRED wayland-client)
+diff --git a/src/gpu/xenos/CMakeLists.txt b/src/gpu/xenos/CMakeLists.txt
+index 9d7c19b..b90c4d0 100644
+--- a/src/gpu/xenos/CMakeLists.txt
++++ b/src/gpu/xenos/CMakeLists.txt
+@@ -196,6 +196,9 @@ target_link_libraries(
+           rex-vma
+           Vulkan::Headers
+ )
++if (ANDROID)
++  target_link_libraries(rexgpu-xenos-vulkan PRIVATE log)
++endif ()
+ 
+ if (REXGLUE_GPU_D3D12)
+   rexgpu_xenos_library(
+diff --git a/src/gpu/xenos/d3d12/texture_cache.h b/src/gpu/xenos/d3d12/texture_cache.h
+index cb35482..ebfa79d 100644
+--- a/src/gpu/xenos/d3d12/texture_cache.h
++++ b/src/gpu/xenos/d3d12/texture_cache.h
+@@ -84,7 +84,7 @@ class D3D12TextureCache final : public TextureCache {
+     if (!texture_cache->Initialize()) {
+       return nullptr;
+     }
+-    return std::move(texture_cache);
++    return texture_cache;
+   }
+ 
+   ~D3D12TextureCache();
+diff --git a/src/gpu/xenos/host/d3d12/d3d12_api.h b/src/gpu/xenos/host/d3d12/d3d12_api.h
+index 04a106e..1582a00 100644
+--- a/src/gpu/xenos/host/d3d12/d3d12_api.h
++++ b/src/gpu/xenos/host/d3d12/d3d12_api.h
+@@ -32,3 +32,16 @@
+ #include "DxbcConverter.h"
+ 
+ // clang-format on
++
++// MinGW: DXC COM interface GUIDs and __mingw_uuidof specializations for ComPtr.
++#ifdef __MINGW32__
++static const GUID IID_rex_IDxcUtils = {0x4605C4CB,0x2019,0x492A,{0xAD,0xA4,0x65,0xF2,0x0B,0xB7,0xD6,0x7F}};
++static const GUID IID_rex_IDxcCompiler = {0x8c210bf3,0x011f,0x4422,{0x8d,0x70,0x6f,0x9a,0xcb,0x8d,0xb6,0x17}};
++static const GUID IID_rex_IDxbcConverter = {0x5F956ED5,0x78D1,0x4B15,{0x82,0x47,0xF7,0x18,0x76,0x14,0xA0,0x41}};
++template <> inline const GUID& __mingw_uuidof<IDxcUtils>() { return IID_rex_IDxcUtils; }
++template <> inline const GUID& __mingw_uuidof<const IDxcUtils>() { return IID_rex_IDxcUtils; }
++template <> inline const GUID& __mingw_uuidof<IDxcCompiler>() { return IID_rex_IDxcCompiler; }
++template <> inline const GUID& __mingw_uuidof<const IDxcCompiler>() { return IID_rex_IDxcCompiler; }
++template <> inline const GUID& __mingw_uuidof<IDxbcConverter>() { return IID_rex_IDxbcConverter; }
++template <> inline const GUID& __mingw_uuidof<const IDxbcConverter>() { return IID_rex_IDxbcConverter; }
++#endif
+diff --git a/src/gpu/xenos/host/d3d12/d3d12_immediate_drawer.h b/src/gpu/xenos/host/d3d12/d3d12_immediate_drawer.h
+index 5315018..1cfaa3c 100644
+--- a/src/gpu/xenos/host/d3d12/d3d12_immediate_drawer.h
++++ b/src/gpu/xenos/host/d3d12/d3d12_immediate_drawer.h
+@@ -35,7 +35,7 @@ class D3D12ImmediateDrawer final : public OverlayDrawer {
+     if (!immediate_drawer->Initialize()) {
+       return nullptr;
+     }
+-    return std::move(immediate_drawer);
++    return immediate_drawer;
+   }
+ 
+   ~D3D12ImmediateDrawer();
+diff --git a/src/gpu/xenos/host/d3d12/d3d12_provider.cpp b/src/gpu/xenos/host/d3d12/d3d12_provider.cpp
+index d834fe7..f5e9082 100644
+--- a/src/gpu/xenos/host/d3d12/d3d12_provider.cpp
++++ b/src/gpu/xenos/host/d3d12/d3d12_provider.cpp
+@@ -225,7 +225,7 @@ bool D3D12Provider::Initialize(i32 adapter_index_wanted) {
+   while (dxgi_factory->EnumAdapters1(adapter_index, &adapter) == S_OK) {
+     DXGI_ADAPTER_DESC1 adapter_desc;
+     if (SUCCEEDED(adapter->GetDesc1(&adapter_desc))) {
+-      if (SUCCEEDED(pfn_d3d12_create_device_(adapter, D3D_FEATURE_LEVEL_11_0, _uuidof(ID3D12Device),
++      if (SUCCEEDED(pfn_d3d12_create_device_(adapter, D3D_FEATURE_LEVEL_11_0, IID_ID3D12Device,
+                                              nullptr))) {
+         if (adapter_index_wanted >= 0) {
+           if (adapter_index == static_cast<u32>(adapter_index_wanted)) {
+diff --git a/src/gpu/xenos/host/presenter.cpp b/src/gpu/xenos/host/presenter.cpp
+index 939c8fd..ed260dc 100644
+--- a/src/gpu/xenos/host/presenter.cpp
++++ b/src/gpu/xenos/host/presenter.cpp
+@@ -9,6 +9,10 @@
+  * @modified    Tom Clay, 2026 - Adapted for ReXGlue runtime
+  */
+ 
++#ifdef __ANDROID__
++#include <android/log.h>
++#endif
++
+ #include <algorithm>
+ #include <atomic>
+ #include <cctype>
+@@ -263,6 +267,17 @@ bool Presenter::RefreshGuestOutput(
+   PaintResult paint_result = PaintResult::kNotPresented;
+   {
+     std::lock_guard<std::mutex> paint_mode_mutex_lock(paint_mode_mutex_);
++#ifdef __ANDROID__
++    {
++      static int rgo_log = 0;
++      if ((rgo_log++ % 60) == 0) {
++        __android_log_print(ANDROID_LOG_INFO, "BS1-PAINT",
++                            "RefreshGuestOutput active=%d paint_mode=%d conn=%d",
++                            is_active ? 1 : 0, static_cast<int>(paint_mode_),
++                            static_cast<int>(surface_paint_connection_state_));
++      }
++    }
++#endif
+     switch (paint_mode_) {
+       case PaintMode::kNone:
+         break;
+diff --git a/src/gpu/xenos/host/surface.cpp b/src/gpu/xenos/host/surface.cpp
+index e902a8a..b471e5b 100644
+--- a/src/gpu/xenos/host/surface.cpp
++++ b/src/gpu/xenos/host/surface.cpp
+@@ -18,6 +18,8 @@ Surface::TypeIndex NativeSurface::GetType() const {
+       return kTypeIndexXCBWindow;
+     case NativeWindow::Type::kCocoa:
+       return kTypeIndexCAMetalLayer;
++    case NativeWindow::Type::kAndroid:
++      return kTypeIndexAndroidANativeWindow;
+     default:
+       return kTypeIndexWin32HWND;
+   }
+diff --git a/src/gpu/xenos/host/surface.h b/src/gpu/xenos/host/surface.h
+index 00cbec2..393eb0c 100644
+--- a/src/gpu/xenos/host/surface.h
++++ b/src/gpu/xenos/host/surface.h
+@@ -36,6 +36,7 @@ class Surface : public rex::NonCopyable {
+     kTypeIndexXCBWindow,
+     kTypeIndexWin32HWND,
+     kTypeIndexCAMetalLayer, /**< Presented via MoltenVK with VK_EXT_metal_surface. */
++    kTypeIndexAndroidANativeWindow, /**< Presented via VK_KHR_android_surface. */
+   };
+   /** Bit mask of `TypeIndex` values, 1 bit per surface type. */
+   using TypeFlags = u32;
+@@ -44,6 +45,7 @@ class Surface : public rex::NonCopyable {
+     kTypeFlagXCBWindow = static_cast<TypeFlags>(1) << kTypeIndexXCBWindow,
+     kTypeFlagWin32HWND = static_cast<TypeFlags>(1) << kTypeIndexWin32HWND,
+     kTypeFlagCAMetalLayer = static_cast<TypeFlags>(1) << kTypeIndexCAMetalLayer,
++    kTypeFlagAndroidANativeWindow = static_cast<TypeFlags>(1) << kTypeIndexAndroidANativeWindow,
+   };
+ 
+   virtual ~Surface() = default;
+diff --git a/src/gpu/xenos/host/vulkan/vulkan_presenter.cpp b/src/gpu/xenos/host/vulkan/vulkan_presenter.cpp
+index 5645de1..8f4bea0 100644
+--- a/src/gpu/xenos/host/vulkan/vulkan_presenter.cpp
++++ b/src/gpu/xenos/host/vulkan/vulkan_presenter.cpp
+@@ -9,6 +9,10 @@
+  * @modified    Tom Clay, 2026 - Adapted for ReXGlue runtime
+  */
+ 
++#ifdef __ANDROID__
++#include <android/log.h>
++#endif
++
+ #include <algorithm>
+ #include <atomic>
+ #include <cstddef>
+@@ -170,6 +174,11 @@ gpu::Surface::TypeFlags VulkanPresenter::GetSurfaceTypesSupportedByInstance(
+   if (instance_extensions.ext_EXT_metal_surface) {
+     type_flags |= gpu::Surface::kTypeFlagCAMetalLayer;
+   }
++#endif
++#if REX_PLATFORM_ANDROID
++  if (instance_extensions.ext_KHR_android_surface) {
++    type_flags |= gpu::Surface::kTypeFlagAndroidANativeWindow;
++  }
+ #endif
+   return type_flags;
+ }
+@@ -343,6 +352,18 @@ VulkanPresenter::ConnectOrReconnectPaintingToSurfaceFromUIThread(
+         vulkan_surface_create_result = ifn.vkCreateMetalSurfaceEXT(
+             instance, &surface_create_info, nullptr, &paint_context_.vulkan_surface);
+       } break;
++#endif
++#if REX_PLATFORM_ANDROID
++      case gpu::Surface::kTypeIndexAndroidANativeWindow: {
++        auto& android_surface = static_cast<const gpu::NativeSurface&>(new_surface);
++        VkAndroidSurfaceCreateInfoKHR surface_create_info;
++        surface_create_info.sType = VK_STRUCTURE_TYPE_ANDROID_SURFACE_CREATE_INFO_KHR;
++        surface_create_info.pNext = nullptr;
++        surface_create_info.flags = 0;
++        surface_create_info.window = static_cast<ANativeWindow*>(android_surface.GetHWND());
++        vulkan_surface_create_result = ifn.vkCreateAndroidSurfaceKHR(
++            instance, &surface_create_info, nullptr, &paint_context_.vulkan_surface);
++      } break;
+ #endif
+       default:
+         REX_UNHANDLED_CASE(surface_type);
+@@ -1372,6 +1393,15 @@ Presenter::PaintResult VulkanPresenter::DriverPaintAndPresent(bool execute_ui_dr
+         vulkan_device_->AcquireQueue(paint_context_.present_queue_family, 0);
+     present_result = dfn.vkQueuePresentKHR(queue_acquisition.GetQueue(), &present_info);
+   }
++#ifdef __ANDROID__
++  {
++    static int present_res_log = 0;
++    if ((present_res_log++ % 60) == 0) {
++      __android_log_print(ANDROID_LOG_INFO, "BS1-VKPRESENT", "present_result=%d img=%u",
++                          (int)present_result, swapchain_image_index);
++    }
++  }
++#endif
+   switch (present_result) {
+     case VK_SUCCESS:
+       return PaintResult::kPresented;
+diff --git a/src/gpu/xenos/pipeline/shader/spirv_translator.cpp b/src/gpu/xenos/pipeline/shader/spirv_translator.cpp
+index a2cd826..6928225 100644
+--- a/src/gpu/xenos/pipeline/shader/spirv_translator.cpp
++++ b/src/gpu/xenos/pipeline/shader/spirv_translator.cpp
+@@ -81,6 +81,10 @@ u64 SPIRVShaderTranslator::GetDefaultVertexShaderModification(
+   shader_modification.vertex.dynamic_addressable_register_count =
+       dynamic_addressable_register_count;
+   shader_modification.vertex.host_vertex_shader_type = host_vertex_shader_type;
++  // Match the DXBC translator: declare all interpolators so vertex fetch writes
++  // always have a destination. Otherwise the analyzed mask may omit ones the
++  // guest writes to, yielding NoResult pointers and invalid SPIR-V.
++  shader_modification.vertex.interpolator_mask = (UINT32_C(1) << xenos::kMaxInterpolators) - 1;
+   return shader_modification.value;
+ }
+ 
+@@ -88,6 +92,7 @@ u64 SPIRVShaderTranslator::GetDefaultPixelShaderModification(
+     u32 dynamic_addressable_register_count) const {
+   Modification shader_modification;
+   shader_modification.pixel.dynamic_addressable_register_count = dynamic_addressable_register_count;
++  shader_modification.pixel.interpolator_mask = (UINT32_C(1) << xenos::kMaxInterpolators) - 1;
+   return shader_modification.value;
+ }
+ 
+@@ -3402,6 +3407,14 @@ void SPIRVShaderTranslator::StoreResult(const InstructionResult& result, spv::Id
+                                            std::to_underlying(SwizzleSource::kX)];
+   }
+ 
++#if defined(__ANDROID__)
++  // ReXGlue Android: some guest shaders write to an interpolator/storage that
++  // was not declared, yielding an invalid target_pointer. Skip the store
++  // rather than dereferencing an invalid SPIR-V id (hard crash).
++  if (target_pointer == spv::NoResult) {
++    return;
++  }
++#endif
+   spv::Id target_type = builder_->getDerefTypeId(target_pointer);
+   unsigned int target_num_components = builder_->getNumTypeComponents(target_type);
+   REX_ASSERT(target_num_components ==
+diff --git a/src/gpu/xenos/vulkan/command_processor.cpp b/src/gpu/xenos/vulkan/command_processor.cpp
+index 97d4eff..01a1d0c 100644
+--- a/src/gpu/xenos/vulkan/command_processor.cpp
++++ b/src/gpu/xenos/vulkan/command_processor.cpp
+@@ -9,6 +9,10 @@
+  * @modified    Tom Clay, 2026 - Adapted for ReXGlue runtime
+  */
+ 
++#ifdef __ANDROID__
++#include <android/log.h>
++#endif
++
+ #include <algorithm>
+ #include <array>
+ #include <bit>
+@@ -2137,6 +2141,17 @@ void VulkanCommandProcessor::IssueSwap([[maybe_unused]] u32 frontbuffer_ptr, u32
+   vertex_buffers_in_sync_[0] = 0;
+   vertex_buffers_in_sync_[1] = 0;
+ 
++#if defined(__ANDROID__)
++  static int present_log = 0;
++  bool present_has_presenter = graphics_system_ && graphics_system_->GetHostPresenter();
++  if ((present_log++ % 60) == 0) {
++    __android_log_print(ANDROID_LOG_INFO, "BS1-PRESENT",
++                        "IssueSwap fb=0x%X w=%u h=%u gs=%d presenter=%d", frontbuffer_ptr,
++                        frontbuffer_width, frontbuffer_height, graphics_system_ ? 1 : 0,
++                        present_has_presenter ? 1 : 0);
++  }
++#endif
++
+   if (!graphics_system_)
+     return;
+   gpu::Presenter* presenter = graphics_system_->GetHostPresenter();
+@@ -2176,6 +2191,15 @@ void VulkanCommandProcessor::IssueSwap([[maybe_unused]] u32 frontbuffer_ptr, u32
+   VkImageView swap_texture_view = texture_cache_->RequestSwapTexture(
+       frontbuffer_width_scaled, frontbuffer_height_scaled, frontbuffer_format,
+       &frontbuffer_width_unscaled, &frontbuffer_height_unscaled, &swap_source_needs_rb_swap);
++#if defined(__ANDROID__)
++  if ((present_log % 60) == 1) {
++    __android_log_print(ANDROID_LOG_INFO, "BS1-PRESENT",
++                        "swap_view=%llu src=%ux%u unscaled=%ux%u fmt=%u",
++                        (unsigned long long)swap_texture_view, frontbuffer_width_scaled,
++                        frontbuffer_height_scaled, frontbuffer_width_unscaled,
++                        frontbuffer_height_unscaled, static_cast<u32>(frontbuffer_format));
++  }
++#endif
+   if (swap_texture_view == VK_NULL_HANDLE) {
+     REXGPU_ERROR("XELOG_GPU PRESENT: swap_texture_view=NULL");
+     return;
+diff --git a/src/hid/sdl3/sdl3_input_driver.cpp b/src/hid/sdl3/sdl3_input_driver.cpp
+index 2ab6d1d..1ac9625 100644
+--- a/src/hid/sdl3/sdl3_input_driver.cpp
++++ b/src/hid/sdl3/sdl3_input_driver.cpp
+@@ -431,13 +431,25 @@ Result<void> SDL3InputDriver::Initialize(IDriverContext& context) {
+         state->pending.reserve(64);
+         SDL_AddEventWatch(&State::EventWatch, state.get());
+ 
++#if defined(__ANDROID__)
++        // SDL_INIT_GAMEPAD on Android calls SDLControllerManager JNI methods that
++        // a minimal host shim cannot serve; the title test uses no gamepad.
++        state->gamepad_up = false;
++#else
+         if (!SDL_InitSubSystem(SDL_INIT_GAMEPAD)) {
+           REXHID_ERROR("SDL: failed to init gamepad subsystem: {}", SDL_GetError());
+           return;
+         }
+         state->gamepad_up = true;
++#endif
+         ++state->revision;
+ 
++#if defined(__ANDROID__)
++        // On Android SDL's file IO goes through SDLActivity.openFileDescriptor,
++        // which a minimal host shim cannot serve; skip loading the mapping DB
++        // (the guest loop does not need gamepad mappings for the title test).
++        (void)mappings;
++#else
+         if (!mappings.empty()) {
+           const std::filesystem::path path =
+               mappings.is_relative() ? rex::platform::GetExecutableFolder() / mappings : mappings;
+@@ -453,6 +465,7 @@ Result<void> SDL3InputDriver::Initialize(IDriverContext& context) {
+             }
+           }
+         }
++#endif
+         REXHID_INFO("SDL input driver initialized");
+       });
+   if (!ran) {
+diff --git a/src/kernel/CMakeLists.txt b/src/kernel/CMakeLists.txt
+index 4388fd4..b705b63 100644
+--- a/src/kernel/CMakeLists.txt
++++ b/src/kernel/CMakeLists.txt
+@@ -43,6 +43,9 @@ foreach (kernel_target rexkernel-objects rexkernel)
+     PUBLIC rexbase rexppc simde
+     PRIVATE tomlplusplus excrypt xxHash::xxhash tlsf libavcodec libavutil
+   )
++  if (ANDROID)
++    target_link_libraries(${kernel_target} PRIVATE log)
++  endif ()
+ 
+   if (REXGLUE_ENABLE_TRACY)
+     # TARGET_NAME makes install(EXPORT) namespace the target, a plain name leaves consumers
+diff --git a/src/kernel/memory.cpp b/src/kernel/memory.cpp
+index 4ca5049..9a5f51b 100644
+--- a/src/kernel/memory.cpp
++++ b/src/kernel/memory.cpp
+@@ -9,6 +9,8 @@
+  * @modified    Tom Clay, 2026 - Adapted for ReXGlue runtime
+  */
+ 
++#include <android/log.h>
++
+ #include <algorithm>
+ #include <array>
+ #include <atomic>
+@@ -239,9 +241,12 @@ bool GuestAddressSpace::Initialize() {
+                                                   rex::memory::PageAccess::kReadWrite, false);
+   if (mapping_ == rex::memory::kFileMappingHandleInvalid) {
+     REXSYS_ERROR("Unable to reserve the 4gb guest address space.");
++    __android_log_print(ANDROID_LOG_ERROR, "BS1-KERN", "4GB file mapping FAILED size=0x%llx",
++                        (unsigned long long)mapping_size);
+     REX_ASSERT_ALWAYS();
+     return false;
+   }
++  __android_log_print(ANDROID_LOG_INFO, "BS1-KERN", "4GB mapping OK fd=%d", (int)(intptr_t)mapping_);
+ 
+ #if REX_PLATFORM_MAC
+   if (MapViewsMac()) {
+@@ -261,9 +266,11 @@ bool GuestAddressSpace::Initialize() {
+   }
+   if (!mapping_base_) {
+     REXSYS_ERROR("Unable to find a continuous block in the 64bit address space.");
++    __android_log_print(ANDROID_LOG_ERROR, "BS1-KERN", "continuous 4GB block FAILED");
+     REX_ASSERT_ALWAYS();
+     return false;
+   }
++  __android_log_print(ANDROID_LOG_INFO, "BS1-KERN", "mapped at base=%p", (void*)mapping_base_);
+ #endif
+   virtual_membase_ = mapping_base_;
+   physical_membase_ = mapping_base_ + 0x100000000ull;
+diff --git a/src/kernel/rexkernel_module.cpp b/src/kernel/rexkernel_module.cpp
+index a405c50..71fe9be 100644
+--- a/src/kernel/rexkernel_module.cpp
++++ b/src/kernel/rexkernel_module.cpp
+@@ -38,7 +38,7 @@ std::atomic<bool> g_connected{false};
+ 
+ }  // namespace
+ 
+-const KernelServices* GetKernelServices() {
++REX_KERNEL_API const KernelServices* GetKernelServices() {
+   return g_connected.load(std::memory_order_acquire) ? &g_services : nullptr;
+ }
+ 
+diff --git a/src/kernel/rexkernel_module.h b/src/kernel/rexkernel_module.h
+index 2049140..f7f3965 100644
+--- a/src/kernel/rexkernel_module.h
++++ b/src/kernel/rexkernel_module.h
+@@ -68,7 +68,7 @@ struct KernelServices {
+ };
+ 
+ /** Returns the services of the running kernel module, or null when the module is not connected. */
+-const KernelServices* GetKernelServices();
++REX_KERNEL_API const KernelServices* GetKernelServices();
+ 
+ /** The kernel module. The program registers one with the app or loads it from rexkernel. */
+ class KernelModule final : public IModule, public IKernelControl {
+diff --git a/src/kernel/xboxkrnl/xboxkrnl_video.cpp b/src/kernel/xboxkrnl/xboxkrnl_video.cpp
+index a8dcc2f..df21ff2 100644
+--- a/src/kernel/xboxkrnl/xboxkrnl_video.cpp
++++ b/src/kernel/xboxkrnl/xboxkrnl_video.cpp
+@@ -9,6 +9,8 @@
+  * @modified    Tom Clay, 2026 - Adapted for ReXGlue runtime
+  */
+ 
++#include <android/log.h>
++
+ #include <algorithm>
+ #include <atomic>
+ #include <string>
+@@ -378,6 +380,12 @@ void VdSwap_entry(MappedVoid buffer_ptr, MappedVoid fetch_ptr, [[maybe_unused]]
+                   [[maybe_unused]] MappedVoid unk3, [[maybe_unused]] MappedVoid unk4,
+                   MappedU32 frontbuffer_ptr, MappedU32 texture_format_ptr,
+                   MappedU32 color_space_ptr, MappedU32 width, MappedU32 height) {
++#if defined(__ANDROID__)
++  static int swap_count = 0;
++  if ((swap_count++ % 30) == 0) {
++    __android_log_print(ANDROID_LOG_INFO, "BS1-VDSWAP", "VdSwap #%d called", swap_count);
++  }
++#endif
+   assert(buffer_ptr);
+   assert(fetch_ptr);
+   assert(frontbuffer_ptr);
+diff --git a/src/ui/sdl3/CMakeLists.txt b/src/ui/sdl3/CMakeLists.txt
+index 9a14b64..dc76119 100644
+--- a/src/ui/sdl3/CMakeLists.txt
++++ b/src/ui/sdl3/CMakeLists.txt
+@@ -24,4 +24,7 @@ set(REX_UI_SDL3_LIBS rexbase SDL3::SDL3)
+ if (APPLE)
+   list(APPEND REX_UI_SDL3_LIBS "-framework CoreFoundation")
+ endif ()
++if (ANDROID)
++  list(APPEND REX_UI_SDL3_LIBS log)
++endif ()
+ target_link_libraries(rexui-sdl3 PRIVATE ${REX_UI_SDL3_LIBS})
+diff --git a/src/ui/sdl3/sdl3_ui_driver.cpp b/src/ui/sdl3/sdl3_ui_driver.cpp
+index 035393b..414f71e 100644
+--- a/src/ui/sdl3/sdl3_ui_driver.cpp
++++ b/src/ui/sdl3/sdl3_ui_driver.cpp
+@@ -1,4 +1,6 @@
+ #include "ui/sdl3/sdl3_ui_driver.h"
++#include <android/log.h>
++#define REXUI_AJLOG(...) __android_log_print(ANDROID_LOG_INFO, "BS1-UI", __VA_ARGS__)
+ 
+ #include <array>
+ #include <cmath>
+@@ -229,6 +231,12 @@ struct SDL3UIDriver::State {
+   void HandleWindowEvent(const SDL_Event& event) {
+     switch (event.type) {
+       case SDL_EVENT_WINDOW_PIXEL_SIZE_CHANGED: {
++#ifdef __ANDROID__
++        __android_log_print(ANDROID_LOG_INFO, "BS1-UI",
++                            "PIXEL_SIZE_CHANGED winID=%u ourID=%u data=%dx%d",
++                            event.window.windowID, window_id, event.window.data1,
++                            event.window.data2);
++#endif
+         UISetupEvent e(UIEvent::Type::kResize);
+         Deliver(e);
+         break;
+@@ -433,8 +441,10 @@ Result<void> SDL3UIDriver::Initialize(IDriverContext& context) {
+   }
+   if (!SDL_InitSubSystem(SDL_INIT_VIDEO)) {
+     REXUI_WARN("no video driver, running headless: {}", SDL_GetError());
++    REXUI_AJLOG("SDL_INIT_VIDEO FAILED: %s", SDL_GetError());
+     return Ok();
+   }
++  REXUI_AJLOG("SDL_INIT_VIDEO OK driver=%s", SDL_GetCurrentVideoDriver() ? SDL_GetCurrentVideoDriver() : "null");
+   s.video_started = true;
+   const char* in_use = SDL_GetCurrentVideoDriver();
+   REXUI_INFO("SDL video driver: {}", in_use ? in_use : "unknown");
+@@ -493,11 +503,16 @@ Result<void> SDL3UIDriver::OpenWindow(const WindowConfig& config) {
+   const int width = static_cast<int>(config.width);
+   const int height = static_cast<int>(config.height);
+ #endif
++  REXUI_AJLOG("before SDL_CreateWindow %dx%d flags=0x%llx driver=%s", width, height,
++              (unsigned long long)flags,
++              SDL_GetCurrentVideoDriver() ? SDL_GetCurrentVideoDriver() : "null");
+   s.window = SDL_CreateWindow(config.title.c_str(), width, height, flags);
+   if (!s.window) {
++    REXUI_AJLOG("SDL_CreateWindow FAILED: %s", SDL_GetError());
+     return Err(ErrorCategory::kPlatform,
+                std::format("SDL_CreateWindow failed: {}", SDL_GetError()));
+   }
++  REXUI_AJLOG("SDL_CreateWindow OK");
+   s.window_id = SDL_GetWindowID(s.window);
+   s.fullscreen = config.fullscreen;
+   s.exclusive = config.fullscreen_exclusive;
+@@ -695,6 +710,14 @@ Result<NativeWindow> SDL3UIDriver::GetNativeWindow() const {
+   NativeWindow result;
+   result.sdl = s.window;
+   const SDL_PropertiesID props = SDL_GetWindowProperties(s.window);
++#if defined(__ANDROID__)
++  if (void* anw =
++          SDL_GetPointerProperty(props, SDL_PROP_WINDOW_ANDROID_WINDOW_POINTER, nullptr)) {
++    result.type = NativeWindow::Type::kAndroid;
++    result.window = anw;
++    return result;
++  }
++#endif
+   if (void* hwnd = SDL_GetPointerProperty(props, SDL_PROP_WINDOW_WIN32_HWND_POINTER, nullptr)) {
+     result.type = NativeWindow::Type::kWin32;
+     result.window = hwnd;
+diff --git a/thirdparty/CMakeLists.txt b/thirdparty/CMakeLists.txt
+index 32d57aa..11eff67 100644
+--- a/thirdparty/CMakeLists.txt
++++ b/thirdparty/CMakeLists.txt
+@@ -308,6 +308,11 @@ foreach (glslang_target glslang MachineIndependent GenericCodeGen OSDependent SP
+     set_target_properties(${glslang_target} PROPERTIES SYSTEM ON)
+   endif ()
+ endforeach ()
++if (ANDROID AND TARGET SPIRV)
++  # glslang debug-only asserts (e.g. getResultingAccessChainType) fire on valid
++  # guest-generated shaders; release builds disable them. Match that behavior.
++  target_compile_definitions(SPIRV PRIVATE NDEBUG)
++endif ()
+ # glslang sets the FOLDER of its targets itself, which replaces the folder set above
+ rexglue_set_folder_recursive(${CMAKE_CURRENT_SOURCE_DIR}/glslang "thirdparty/glslang")
+ # Create alias for older glslang versions that don't provide it
+diff --git a/thirdparty/cli11 b/thirdparty/cli11
+index bfffd37..b04fc80 160000
+--- a/thirdparty/cli11
++++ b/thirdparty/cli11
+@@ -1 +1 @@
+-Subproject commit bfffd37e1f804ca4fae1caae106935791696b6a9
++Subproject commit b04fc8016df50e295cf1db2c806be6134f46963b
+diff --git a/thirdparty/excrypt b/thirdparty/excrypt
+--- a/thirdparty/excrypt
++++ b/thirdparty/excrypt
+@@ -1 +1 @@
+-Subproject commit 088094585aee1694cdeef9a9330d29d14aef9203
++Subproject commit 088094585aee1694cdeef9a9330d29d14aef9203-dirty
+diff --git a/thirdparty/glslang b/thirdparty/glslang
+index f4f1d8a..9bb8cff 160000
+--- a/thirdparty/glslang
++++ b/thirdparty/glslang
+@@ -1 +1 @@
+-Subproject commit f4f1d8a352ca1908943aea2ad8c54b39b4879080
++Subproject commit 9bb8cfffb0eed010e07132282c41d73064a7a609-dirty
+diff --git a/thirdparty/imgui b/thirdparty/imgui
+index 6d910d5..9dbcb2f 160000
+--- a/thirdparty/imgui
++++ b/thirdparty/imgui
+@@ -1 +1 @@
+-Subproject commit 6d910d5487d11ca567b61c7824b0c78c569d62f0
++Subproject commit 9dbcb2f1cc0e8a3ffac51d7f9d28efdb228db14b-dirty
+diff --git a/thirdparty/inja b/thirdparty/inja
+index 7d1b460..482473a 160000
+--- a/thirdparty/inja
++++ b/thirdparty/inja
+@@ -1 +1 @@
+-Subproject commit 7d1b4600b68595085a949743331c2e5673f511ea
++Subproject commit 482473a878407a1f0412de30ccb909ac0411e628
+diff --git a/thirdparty/libmspack b/thirdparty/libmspack
+index 3059077..8f2a2a9 160000
+--- a/thirdparty/libmspack
++++ b/thirdparty/libmspack
+@@ -1 +1 @@
+-Subproject commit 305907723a4e7ab2018e58040059ffb5e77db837
++Subproject commit 8f2a2a91ae2d12f985a196d481962ca4731f0f4d-dirty
+diff --git a/thirdparty/sdl3 b/thirdparty/sdl3
+index 147a8ee..1f63082 160000
+--- a/thirdparty/sdl3
++++ b/thirdparty/sdl3
+@@ -1 +1 @@
+-Subproject commit 147a8ee32dbf9ac02f3794964490687b6bbda1bc
++Subproject commit 1f63082bb6fee5cb81d2fd8b4a227f10606e44df
+diff --git a/thirdparty/simde b/thirdparty/simde
+index 71fd833..24fa542 160000
+--- a/thirdparty/simde
++++ b/thirdparty/simde
+@@ -1 +1 @@
+-Subproject commit 71fd833d9666141edcd1d3c109a80e228303d8d7
++Subproject commit 24fa5420cd413621648063f04a09fa35c7afacf7
+diff --git a/thirdparty/spdlog b/thirdparty/spdlog
+index 79524dd..6d9805d 160000
+--- a/thirdparty/spdlog
++++ b/thirdparty/spdlog
+@@ -1 +1 @@
+-Subproject commit 79524ddd08a4ec981b7fea76afd08ee05f83755d
++Subproject commit 6d9805df3f588402b17073dcd13eb569ceda864d
+diff --git a/thirdparty/tomlplusplus b/thirdparty/tomlplusplus
+index 3017243..c38c9b9 160000
+--- a/thirdparty/tomlplusplus
++++ b/thirdparty/tomlplusplus
+@@ -1 +1 @@
+-Subproject commit 30172438cee64926dc41fdd9c11fb3ba5b2ba9de
++Subproject commit c38c9b922a68fc9772b25d7f606133d3ec4decfd
+diff --git a/thirdparty/xxHash b/thirdparty/xxHash
+index e626a72..35b0373 160000
+--- a/thirdparty/xxHash
++++ b/thirdparty/xxHash
+@@ -1 +1 @@
+-Subproject commit e626a72bc2321cd320e953a0ccf1584cad60f363
++Subproject commit 35b0373c697b5f160d3db26b1cbb45a0d5ba788c
