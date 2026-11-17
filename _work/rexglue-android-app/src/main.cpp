@@ -8,23 +8,111 @@
 #include <SDL3/SDL_main.h>
 #include <rex/app/title_app.h>
 #include <rex/cli.h>
+#include <rex/driver_module.h>
+#include <rex/driver_registration.h>
+#include <rex/hid/input_driver.h>
+#include <rex/hid/pad.h>
+#include <rex/module.h>
+#include <rex/result.h>
 
+#include <algorithm>
+#include <array>
 #include <jni.h>
-#include <string>
-#include <vector>
 #include <memory>
+#include <mutex>
+#include <span>
+#include <string>
+#include <string_view>
+#include <vector>
 #include <android/log.h>
 #define AJLOG(...) __android_log_print(ANDROID_LOG_INFO, "BS1-JNI", __VA_ARGS__)
 
 #include "generated/default/bioshock1_init.h"
 
 namespace {
+
+// ---- Virtual gamepad fed by the on-screen touch controls --------------------
+// The guest reads XamInputGetState -> IInputSystem::GetState -> IInputDriver::
+// GetDeviceState. The SDL3 input driver has no gamepad on Android, so we provide
+// a tiny always-connected driver whose state comes from nativeSetControls().
+constexpr u64 kTouchPadValue = 0x54554348;  // "TUCH"
+
+std::mutex g_touch_mutex;
+rex::hid::PadState g_touch_pad{};
+
+rex::Error NotTouchPad() {
+  return rex::Error(rex::ErrorCategory::kNotFound, "not the touch pad");
+}
+
+class TouchInputDriver final : public rex::hid::IInputDriver {
+ public:
+  std::string_view GetName() const override { return "touch"; }
+  [[nodiscard]] rex::Result<void> Initialize(rex::IDriverContext&) override { return {}; }
+  void Shutdown() override {}
+  u64 GetDeviceRevision() const override { return 1; }
+  void EnumerateDevices(std::vector<rex::hid::PadDevice>& out) override {
+    rex::hid::PadDevice device;
+    device.id = rex::hid::PadDeviceID{kTouchPadValue};
+    device.name = "Touch Controls";
+    device.info.type = rex::hid::PadType::kX360;
+    device.identity.xinput_slot = 0;
+    out.push_back(std::move(device));
+  }
+  [[nodiscard]] rex::Result<rex::hid::PadState> GetDeviceState(rex::hid::PadDeviceID id) override {
+    if (id.value != kTouchPadValue) return std::unexpected(NotTouchPad());
+    std::lock_guard<std::mutex> lock(g_touch_mutex);
+    return g_touch_pad;
+  }
+  [[nodiscard]] rex::Result<rex::hid::PadCapabilities> GetDeviceCapabilities(
+      rex::hid::PadDeviceID id) override {
+    if (id.value != kTouchPadValue) return std::unexpected(NotTouchPad());
+    rex::hid::PadCapabilities caps;
+    caps.subtype = 0x01;
+    caps.supported.buttons = 0xFFFF;
+    caps.supported.left_trigger = 0xFF;
+    caps.supported.right_trigger = 0xFF;
+    caps.supported.thumb_lx = 0x7FFF;
+    caps.supported.thumb_ly = 0x7FFF;
+    caps.supported.thumb_rx = 0x7FFF;
+    caps.supported.thumb_ry = 0x7FFF;
+    caps.motors.left_motor = 0xFFFF;
+    caps.motors.right_motor = 0xFFFF;
+    return caps;
+  }
+  [[nodiscard]] rex::Result<void> SetDeviceVibration(rex::hid::PadDeviceID id,
+                                                     const rex::hid::PadVibration&) override {
+    if (id.value != kTouchPadValue) return std::unexpected(NotTouchPad());
+    return {};
+  }
+};
+
+std::unique_ptr<rex::IDriver> CreateTouchInput() {
+  return std::make_unique<TouchInputDriver>();
+}
+
+constexpr std::array<rex::DriverRegistration, 1> kTouchDrivers = {{
+    rex::DriverRegistration{rex::DriverType::kInput, "touch", {}, &CreateTouchInput},
+}};
+
+class TouchInputProvider final : public rex::IModule, public rex::IDriverModule {
+ public:
+  REX_MODULE_SERVES(::rex::IDriverModule)
+  std::string_view GetName() const override { return "rexhid-touch"; }
+  [[nodiscard]] rex::Result<void> Connect(rex::IInterfaceFactory&) override { return {}; }
+  void Disconnect() override {}
+  [[nodiscard]] rex::Result<void> Init() override { return {}; }
+  void Shutdown() override {}
+  rex::IInterface* QueryInterface(std::string_view name, u32 version) override {
+    return rex::FindModuleInterface<rex::IDriverModule>(*this, name, version);
+  }
+  std::span<const rex::DriverRegistration> GetDrivers() const override { return kTouchDrivers; }
+};
+
+TouchInputProvider g_touch_input_provider;
+
 class Bioshock1App : public rex::app::TitleApp {
  public:
   Bioshock1App() : TitleApp("bioshock1", kPPCImageConfig) {}
-  // Android boot-test: audio/input drivers need extra Java setup; the title
-  // screen only needs the graphics + UI (surface) path. Disable audio/input
-  // requirements so Init can proceed to the guest loop and present a frame.
   rex::AppSysRequirements GetRequirements() const override {
     rex::AppSysRequirements needs;
     needs.graphics_family = rex::GraphicsFamily::kXenos;
@@ -32,6 +120,9 @@ class Bioshock1App : public rex::app::TitleApp {
     needs.input = false;
     needs.ui = true;
     return needs;
+  }
+  void OnRegisterModules(std::vector<rex::IModule*>& modules) override {
+    modules.push_back(&g_touch_input_provider);
   }
 };
 
@@ -65,6 +156,8 @@ Java_com_bioshock1_recomp_NativeBridge_nativeInit(JNIEnv* env, jclass,
   // Dump generated SPIR-V shaders so they can be validated (Adreno driver rejects them).
   const std::string files_dir = root.substr(0, root.find_last_of('/'));
   args.push_back("--gpu.xenos.dump_shaders=" + files_dir + "/shaders");
+  // Use the virtual touch gamepad as the input source (SDL3 has no Android gamepad here).
+  args.push_back("--hid.drivers=touch");
   const auto cli = rex::CLIArgList::Parse(args);
   AJLOG("calling Init");
   auto init_result = g_app->Init(cli);
@@ -130,9 +223,39 @@ Java_com_bioshock1_recomp_NativeBridge_nativeHleImportCount(JNIEnv*, jclass) {
 }
 
 JNIEXPORT void JNICALL
-Java_com_bioshock1_recomp_NativeBridge_nativeSetControls(JNIEnv*, jclass,
-                                                         jfloatArray, jbyteArray) {
-  // TODO: bridge touch -> XInput HLE once the guest loop is confirmed.
+Java_com_bioshock1_recomp_NativeBridge_nativeSetControls(JNIEnv* env, jclass, jfloatArray axes_array,
+                                                         jbyteArray buttons_array) {
+  rex::hid::PadState state;
+  if (buttons_array) {
+    const jsize count = env->GetArrayLength(buttons_array);
+    jbyte* buttons = env->GetByteArrayElements(buttons_array, nullptr);
+    for (jsize i = 0; i < count && i < 32; ++i) {
+      if (!buttons[i]) continue;
+      switch (i) {
+        case 0: state.buttons |= rex::hid::kPadA; break;
+        case 1: state.buttons |= rex::hid::kPadB; break;
+        case 2: state.buttons |= rex::hid::kPadX; break;
+        case 3: state.buttons |= rex::hid::kPadY; break;
+        case 9: state.buttons |= rex::hid::kPadStart; break;
+        default: break;
+      }
+    }
+    env->ReleaseByteArrayElements(buttons_array, buttons, JNI_ABORT);
+  }
+  if (axes_array) {
+    const jsize count = env->GetArrayLength(axes_array);
+    jfloat* axes = env->GetFloatArrayElements(axes_array, nullptr);
+    const auto to_i16 = [](float v) {
+      return static_cast<i16>(std::clamp(v, -1.0f, 1.0f) * 32767.0f);
+    };
+    if (count > 0) state.thumb_lx = to_i16(axes[0]);
+    if (count > 1) state.thumb_ly = to_i16(axes[1]);
+    env->ReleaseFloatArrayElements(axes_array, axes, JNI_ABORT);
+  }
+  {
+    std::lock_guard<std::mutex> lock(g_touch_mutex);
+    g_touch_pad = state;
+  }
 }
 
 JNIEXPORT jint JNICALL

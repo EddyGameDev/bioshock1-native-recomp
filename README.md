@@ -33,6 +33,10 @@ code:
   hand-written approximation.
 - **Guest-presented frames.** The title appears through the real Xenos GPU
   command processor → `VdSwap` → `vkQueuePresentKHR` path.
+- **Working on-screen controls (Android).** The touch overlay feeds a virtual
+  gamepad into the runtime's input system, so START advances from the title to
+  the in-game main menu (NEW GAME / LOAD GAME / CREDITS). A/B/X/Y and the left
+  stick are wired the same way.
 - **No game data in the APK.** The launcher asks you to import your own ISO;
   the XEX and full game tree are extracted at runtime into app-private storage.
   Nothing proprietary is committed or shipped.
@@ -122,8 +126,21 @@ Apply the Android port patches from [`patches/`](patches/PATCHES.md) to a clean
 
 ```powershell
 python tools/pipeline.py build-native   # host selftest + native build
-build\bs1-real\bioshock1.exe            # renders the real title screen
+.\run-windows.ps1                       # 1920x1080 fullscreen, real title screen
 ```
+
+`run-windows.ps1` is the recommended way to launch: the runtime otherwise
+defaults to a **1280x720 window with 1x internal resolution**, which looks very
+low on a modern monitor. The script sets `--ui.resolution=1920x1080` (window and
+the video mode the guest sees) and supports optional supersampling:
+
+```powershell
+.\run-windows.ps1 -Scale 2                        # sharper: 2x internal resolution
+.\run-windows.ps1 -Resolution 2560x1440 -Scale 2 -Windowed
+```
+
+If you prefer to run the exe directly, pass the same flags yourself:
+`bioshock1.exe --ui.resolution=1920x1080 --gpu.resolution_scale_x=2 --gpu.resolution_scale_y=2`.
 
 ### 3. Build and install the Android launcher
 
