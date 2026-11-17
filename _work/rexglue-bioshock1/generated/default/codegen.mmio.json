@@ -1,0 +1,318 @@
+{
+  "declared": [],
+  "guarded": [
+    {
+      "access": "write",
+      "address": "0x82181D20",
+      "function": "0x82181CA0",
+      "reason": "eieio"
+    },
+    {
+      "access": "read",
+      "address": "0x82183370",
+      "function": "0x82183368",
+      "reason": "offset"
+    },
+    {
+      "access": "write",
+      "address": "0x82183380",
+      "function": "0x82183378",
+      "reason": "offset"
+    },
+    {
+      "access": "write",
+      "address": "0x828029C0",
+      "function": "0x82802928",
+      "reason": "offset"
+    },
+    {
+      "access": "write",
+      "address": "0x82802A48",
+      "function": "0x828029F8",
+      "reason": "offset"
+    },
+    {
+      "access": "write",
+      "address": "0x82802D78",
+      "function": "0x82802C80",
+      "reason": "offset"
+    }
+  ],
+  "matched": [
+    {
+      "access": "write",
+      "address": "0x8217E3CC",
+      "block": "GPU",
+      "function": "0x8217E340",
+      "target": "0x7FC86110"
+    },
+    {
+      "access": "write",
+      "address": "0x8217E60C",
+      "block": "GPU",
+      "function": "0x8217E4B0",
+      "target": "0x7FC86110"
+    },
+    {
+      "access": "read",
+      "address": "0x82181C84",
+      "block": "GPU",
+      "function": "0x82181BE8",
+      "target": "0x7FC86544"
+    },
+    {
+      "access": "write",
+      "address": "0x821821E8",
+      "block": "GPU",
+      "function": "0x82182058",
+      "target": "0x7FC80714"
+    },
+    {
+      "access": "write",
+      "address": "0x82183A28",
+      "block": "GPU",
+      "function": "0x82183A20",
+      "target": "0x7FC83214"
+    },
+    {
+      "access": "write",
+      "address": "0x82183A34",
+      "block": "GPU",
+      "function": "0x82183A20",
+      "target": "0x7FC83408"
+    },
+    {
+      "access": "read",
+      "address": "0x82801C44",
+      "block": "APU",
+      "function": "0x82801C38",
+      "target": "0x7FEA1800"
+    },
+    {
+      "access": "read",
+      "address": "0x82802774",
+      "block": "APU",
+      "function": "0x82802738",
+      "target": "0x7FEA1800"
+    },
+    {
+      "access": "read",
+      "address": "0x8280277C",
+      "block": "APU",
+      "function": "0x82802738",
+      "target": "0x7FEA1804"
+    },
+    {
+      "access": "read",
+      "address": "0x82802784",
+      "block": "APU",
+      "function": "0x82802738",
+      "target": "0x7FEA1808"
+    },
+    {
+      "access": "read",
+      "address": "0x8280278C",
+      "block": "APU",
+      "function": "0x82802738",
+      "target": "0x7FEA180C"
+    },
+    {
+      "access": "read",
+      "address": "0x828027A8",
+      "block": "APU",
+      "function": "0x82802738",
+      "target": "0x7FEA1810"
+    },
+    {
+      "access": "read",
+      "address": "0x828027C4",
+      "block": "APU",
+      "function": "0x82802738",
+      "target": "0x7FEA1814"
+    },
+    {
+      "access": "read",
+      "address": "0x828027CC",
+      "block": "APU",
+      "function": "0x82802738",
+      "target": "0x7FEA1818"
+    },
+    {
+      "access": "read",
+      "address": "0x828027DC",
+      "block": "APU",
+      "function": "0x82802738",
+      "target": "0x7FEA181C"
+    },
+    {
+      "access": "read",
+      "address": "0x828027E8",
+      "block": "APU",
+      "function": "0x82802738",
+      "target": "0x7FEA1820"
+    },
+    {
+      "access": "read",
+      "address": "0x828027F4",
+      "block": "APU",
+      "function": "0x82802738",
+      "target": "0x7FEA1840"
+    },
+    {
+      "access": "read",
+      "address": "0x828027FC",
+      "block": "APU",
+      "function": "0x82802738",
+      "target": "0x7FEA1844"
+    },
+    {
+      "access": "read",
+      "address": "0x82802804",
+      "block": "APU",
+      "function": "0x82802738",
+      "target": "0x7FEA1848"
+    },
+    {
+      "access": "read",
+      "address": "0x82802828",
+      "block": "APU",
+      "function": "0x82802738",
+      "target": "0x7FEA184C"
+    },
+    {
+      "access": "read",
+      "address": "0x82802844",
+      "block": "APU",
+      "function": "0x82802738",
+      "target": "0x7FEA1850"
+    },
+    {
+      "access": "read",
+      "address": "0x8280284C",
+      "block": "APU",
+      "function": "0x82802738",
+      "target": "0x7FEA1854"
+    },
+    {
+      "access": "read",
+      "address": "0x8280285C",
+      "block": "APU",
+      "function": "0x82802738",
+      "target": "0x7FEA1858"
+    },
+    {
+      "access": "read",
+      "address": "0x82802864",
+      "block": "APU",
+      "function": "0x82802738",
+      "target": "0x7FEA185C"
+    },
+    {
+      "access": "read",
+      "address": "0x8280286C",
+      "block": "APU",
+      "function": "0x82802738",
+      "target": "0x7FEA1860"
+    },
+    {
+      "access": "read",
+      "address": "0x82802870",
+      "block": "APU",
+      "function": "0x82802738",
+      "target": "0x7FEA1864"
+    },
+    {
+      "access": "read",
+      "address": "0x82802874",
+      "block": "APU",
+      "function": "0x82802738",
+      "target": "0x7FEA1880"
+    },
+    {
+      "access": "read",
+      "address": "0x828028A8",
+      "block": "APU",
+      "function": "0x82802738",
+      "target": "0x7FEA1884"
+    },
+    {
+      "access": "read",
+      "address": "0x828028BC",
+      "block": "APU",
+      "function": "0x82802738",
+      "target": "0x7FEA1888"
+    },
+    {
+      "access": "read",
+      "address": "0x828028C4",
+      "block": "APU",
+      "function": "0x82802738",
+      "target": "0x7FEA188C"
+    },
+    {
+      "access": "read",
+      "address": "0x828028D4",
+      "block": "APU",
+      "function": "0x82802738",
+      "target": "0x7FEA1890"
+    },
+    {
+      "access": "read",
+      "address": "0x828028EC",
+      "block": "APU",
+      "function": "0x82802738",
+      "target": "0x7FEA1894"
+    },
+    {
+      "access": "read",
+      "address": "0x828028F8",
+      "block": "APU",
+      "function": "0x82802738",
+      "target": "0x7FEA1898"
+    },
+    {
+      "access": "read",
+      "address": "0x82802900",
+      "block": "APU",
+      "function": "0x82802738",
+      "target": "0x7FEA189C"
+    },
+    {
+      "access": "read",
+      "address": "0x82802904",
+      "block": "APU",
+      "function": "0x82802738",
+      "target": "0x7FEA18A0"
+    },
+    {
+      "access": "read",
+      "address": "0x82802908",
+      "block": "APU",
+      "function": "0x82802738",
+      "target": "0x7FEA18A4"
+    },
+    {
+      "access": "write",
+      "address": "0x82802AF0",
+      "block": "APU",
+      "function": "0x82802A78",
+      "target": "0x7FEA1804"
+    },
+    {
+      "access": "write",
+      "address": "0x82802AFC",
+      "block": "APU",
+      "function": "0x82802A78",
+      "target": "0x7FEA1804"
+    },
+    {
+      "access": "read",
+      "address": "0x82802B6C",
+      "block": "APU",
+      "function": "0x82802B40",
+      "target": "0x7FEA1818"
+    }
+  ],
+  "unserved": [],
+  "unsupported": []
+}

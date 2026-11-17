@@ -30,11 +30,14 @@ android/app/.cxx/
 android/build/
 recomp/generated/
 
-# The JNI bridge source lives under _work/ in the working tree; keep just it.
+# The launcher sources live under _work/ in the working tree; keep just them.
 _work/*
 !_work/rexglue-android-app/
 !_work/rexglue-android-app/**
 _work/rexglue-android-app/build/
+!_work/rexglue-bioshock1/
+!_work/rexglue-bioshock1/**
+_work/rexglue-bioshock1/build/
 
 # Staged native libraries (built from source by the pipeline)
 *.so
