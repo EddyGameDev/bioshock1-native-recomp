@@ -370,11 +370,6 @@ void CustomXenosGraphicsDriver::LoadShaderMicrocode(bool pixel, const uint8_t* b
 }
 
 void CustomXenosGraphicsDriver::WorkerLoop(std::stop_token stop) {
-  // Run the GPU command-processor/GL submit thread at display priority so the Android scheduler
-  // keeps it on a big core and never lets background work delay frame submission.
-  if (setpriority(PRIO_PROCESS, 0, -8) != 0) {
-    setpriority(PRIO_PROCESS, 0, -4);
-  }
   if (!backend_.EnsureInitialized(memory_, watch_)) {
     GLESERR("Gles3Backend failed to initialize on GPU worker thread!");
     return;
