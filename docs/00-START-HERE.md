@@ -1,20 +1,26 @@
-# BioShock 1 — Native Android Static Recompilation
+# BioShock 1 — Native Android & Windows Static Recompilation
 
 **START HERE.** This is the master index and honest status statement for the
 project. Read this before touching any tool.
+
+- **Community & Feedback Discord:** **https://discord.gg/aaDRJQNw8T**
+- **Required Game Version:** **Xbox 360 World Release** (**Title ID: `545407D8`**, **Media ID: `44E704F7`**)
+- **Current Release:** **`v0.0.5-experimental`** (Android APK + Windows standalone zip)
 
 ---
 
 ## What this project is
 
-A host-side **static recompilation** pipeline plus an Android launcher that
-turns an Xbox 360 game (BioShock, World region) into C++ once on a PC, then
-builds that C++ into a native `arm64-v8a` library executed directly on Android.
+A host-side **static recompilation** pipeline plus native **Windows** and **Android**
+launchers that turn an Xbox 360 game (**BioShock 1, World Release**) into C++ once
+on a PC, then build that C++ into native `x86_64` (Windows) and `arm64-v8a` (Android)
+executables executed directly on the target device.
 
 There is **no emulator loop, no JIT, and no interpreter** in the final design.
-The PowerPC code is translated ahead of time; only the runtime (kernel HLE,
-memory, input, graphics) executes on the device. This is the same class of
-project as the reference ports in the parent folder:
+The PowerPC code is translated ahead of time; only the runtime (ReXGlue kernel HLE,
+memory, XAM, audio, input, and our custom Xenos D3D11 / OpenGL ES 3.2 renderers)
+executes on the device. This is the same class of project as the reference ports
+in the parent folder:
 
 | Reference | Console | Recompiler | Launcher |
 |---|---|---|---|
@@ -22,34 +28,36 @@ project as the reference ports in the parent folder:
 | DBZ: Legacy of Goku | GBA | gbarecomp | Kotlin launcher |
 | Contra: Legacy of War | PS1 | psxrecomp | recomp-ui |
 | Metal Gear Solid 3 | PS2 | PS2Recomp | Kotlin launcher (not embedded) |
-| **BioShock 1 (this)** | **Xbox 360** | **ReXGlue / XenonRecomp** | **Kotlin launcher (not embedded)** |
+| **BioShock 1 (this)** | **Xbox 360** | **ReXGlue / XenonRecomp** | **Kotlin Android launcher + Windows launcher (not embedded)** |
 
 ---
 
-## Honest status (read this)
+## Honest status (`v0.0.5-experimental`)
 
-This repository is a **complete, buildable engineering scaffold** with the
-real game analysed and the full toolchain vendored. It is **not yet a playable
-game**, and it is important to understand why:
+Both **Windows** and **Android** builds boot through the real ReXGlue runtime,
+render the title screen, intro cinematic, Bathysphere descent, Andrew Ryan
+elevator speech, and in-game Rapture levels with audio, full controls, live
+resolution scaling, and working in-game Save / Load:
 
-1. **Codegen is host-only and needs analysis input.** ReXGlue/XenonRecomp need
-   game-specific function boundaries, jump tables, ABI helper addresses, and
-   import bindings. Those are produced by reverse engineering a *specific*
-   XEX build. This project's `config/bioshock1.toml` is generated from the real
-   XEX but deliberately leaves those values marked `TODO`.
-2. **The Android runtime is a skeleton.** The HLE kernel implements a small
-   bootstrap import set; the GLES3 layer renders a diagnostic pattern. The
-   Xenos→GLES3 command/shader translator and the full XDK surface are not
-   implemented.
-3. **BioShock is a hard target.** It is a large, unoptimised-era Unreal
-   Engine 2.5 title ("Vengeance"), ~12.8 MB of packed XEX image, heavy XMA
-   audio, and a complex D3D9/Xenos renderer. The public ReXGlue ports listed
-   in its README are smaller XBLA titles; even *Saints Row (360)* is only at
-   "Planning". Expect this to be a multi-month reverse-engineering effort.
-
-Everything that **can** be verified here **is** verified: the ISO was read,
-the real `default.xex` was extracted and parsed, the native runtime compiles
-and passes a host self-test, and an Android APK is assembled by Gradle.
+1. **Full ahead-of-time PPC→C++ codegen (152 TUs / 36,625 functions).** Generated
+   from the real `default.xex` (`0x545407D8`, Media ID `44E704F7`, XDK 5426) and
+   linked against the real ReXGlue v0.11.0 runtime on both Windows and Android.
+2. **Custom Xenos Renderers (`renderer/`, `rexgpu-xenos-custom`):**
+   - **Windows (D3D11):** Live no-restart internal resolution scaling (`360p`–`2160p`
+     via **F1**), live Lanczos2 / Bilinear present filter (**F2**), async FIFO FXC
+     shader compilation + disk cache, and strict hazard/binding tracking.
+   - **Android (OpenGL ES 3.2):** Xenos→GLSL ES 3.20 shader translator, live
+     no-restart internal resolution scaling (`360p`–`1440p` via the on-screen **RES**
+     pill, defaulting to `540p` / `2x` anisotropy on fresh installs), tiered texture
+     change-detection, fast row-copy Bink video uploads, `RRRR` resolved depth
+     replication for underwater fog/lighting, and display-priority GPU worker thread.
+3. **Audio, Controls & Save / Load:**
+   - **Android Audio:** Native 48 kHz stereo `libaaudio.so` driver in `sdl3_audio_driver.cpp`.
+   - **Full Xbox 360 Touch Controller:** Dual floating sticks, `LT`/`LB`/`RT`/`RB`,
+     `D-Pad`, `A`/`B`/`X`/`Y`, `L3`/`R3`, `BACK`, `START`, `RES`, and `HUD` toggle.
+   - **In-Game Save / Load:** Fixed `ObDosDevices` (`0xFFFFFFFD`) root directory
+     handles, `\??\` prefix stripping, Android SELinux `MoveNoReplace` (`Save.tmp`
+     → `DLContentInfo.pkg`), and numeric profile settings persistence.
 
 ---
 

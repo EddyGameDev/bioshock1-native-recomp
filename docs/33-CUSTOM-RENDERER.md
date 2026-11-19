@@ -1,8 +1,9 @@
-# Custom Renderer (Windows) — live sharp upscale + in-game menu
+# Custom Xenos Renderer (Windows D3D11 + Android OpenGL ES 3.2)
 
-Status: **implemented and verified** (2026-11-17). Part of the
-`v0.0.2-experimental` line. This document records what was studied from other
-static-recomp ports, what was built, and the honest scope.
+Status: **implemented and verified through `v0.0.5-experimental`** (2026-11-19).
+This document records what was studied from other static-recomp ports, what was
+built for both **Windows (D3D11)** and **Android (OpenGL ES 3.2)**, and the live
+resolution scaling and performance architecture.
 
 ## Why
 
@@ -104,3 +105,40 @@ module** (`rexgpu-xenos-custom` / `librexgpu-xenos-customd.dll`) under
     `DepthClipEnable`, dual-face cull skip, `RB_STENCILREFMASK_BF`, `kD24FS8`
     depth clear decode, `vfetch_mini` slot inheritance, `precise` VS position
     invariance, and R<->B / channel-replication texture swizzles.
+
+## Standalone Custom OpenGL ES 3.2 Xenos Backend for Android (`renderer/src/gles3/`)
+
+Introduced in `v0.0.4-experimental` and optimized in `v0.0.5-experimental`, the
+Android build compiles `rexgpu-xenos-custom` against **OpenGL ES 3.2 + EGL**
+(`android_custom_driver.cpp`, `gles3_backend.cpp`, `gles3_resources.cpp`,
+`gles3_shaders.cpp`, `xenos_glsl.cpp`):
+
+- **Xenos -> GLSL ES 3.20 translator (`xenos_glsl.{h,cpp}`):** Translates guest
+  Xenos vertex and pixel microcode directly into `#version 320 es` shaders with
+  hardware vertex fetch, ALU/control-flow emulation, and a persistent on-device
+  binary program cache (`glGetProgramBinary` / `glProgramBinary`).
+- **Live no-restart internal resolution scaling (`360p`–`1440p`):** The on-screen
+  **RES** pill cycles `360p -> 540p -> 720p -> 1080p -> 1440p` live via JNI
+  (`nativeSetInternalResolution`). Fresh Android installs default to **`540p`**
+  with **`2x` anisotropic filtering** for smooth frame rates across mid-range and
+  flagship mobile GPUs.
+- **Depth resolve & underwater lighting (`gles3_backend.cpp`):** Depth resolves
+  use `GL_NEAREST` filtering and replicate the resolved depth value across all
+  four channels (`RRRR`) so BioShock's spotlights, shadow projections, and
+  Rapture underwater fog shaders sample accurate depth regardless of whether the
+  Xenos fetch swizzle selects `.r`, `.g`, `.b`, or `.a`.
+- **Bink video fast-path & tiered texture change-detection (`gles3_resources.cpp`):**
+  - Linear (untiled) 2D texture levels use a fast row-by-row `memcpy` path in
+    `LinearizeLevel`, eliminating per-texel loops during Bink video playback
+    (such as Andrew Ryan's elevator projection speech).
+  - Texture memory fingerprinting is tiered: dynamic and uncompressed video
+    textures are checked every frame so 30 fps Bink movies never stall or flicker
+    on 90–120 Hz screens, whereas static compressed level textures back off after
+    consecutive unchanged checks.
+  - Per-frame texture GC eviction is capped so level streaming does not cause
+    frame-time spikes.
+- **Display-priority GPU worker & sustained performance (`android_custom_driver.cpp`):**
+  - The GPU command processor thread boosts its scheduling priority to Android
+    display priority (`setpriority(PRIO_PROCESS, 0, -8)` with fallback to `-4`),
+    paired with `window.setSustainedPerformanceMode(true)` and
+    `android:appCategory="game"`.

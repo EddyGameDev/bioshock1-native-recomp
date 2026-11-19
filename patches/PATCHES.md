@@ -55,12 +55,25 @@ hand; the patch is small and each hunk is documented in
 - `xboxkrnl_rtl.cpp`: warn instead of aborting (`REX_ASSERT`) on cross-thread
   `RtlLeaveCriticalSection` / contended `RtlEnterCriticalSection` so guest
   loading/streaming threads release locks cleanly instead of crashing.
-- **Custom renderer (Windows):** a Lanczos2 guest-output upscale shader
-  (`host/shaders/bytecode/d3d12_5_1/guest_output_lanczos_ps.h`, source under
-  `renderer/shaders/`) replaces bilinear upscaling. `presenter.h` adds
-  `GuestOutputPaintEffect::kLanczos` and a live `present_upscale` setting;
-  `d3d12_presenter.*` builds the pipeline; `presenter.cpp` selects it from the
-  setting each frame. Toggle live with no restart via F4 settings or F2 hotkey.
+- `xboxkrnl_io_info.cpp` (`NtSetInformationFile` / `XFileRenameInformation`):
+  strip leading `\??\` prefixes and handle the special `ObDosDevices`
+  (`0xFFFFFFFD`) `root_dir_handle` by resolving relative target names into the
+  source file's parent directory. Required for BioShock's save-game commit step
+  (`Save.tmp` -> `DLContentInfo.pkg`).
+- `host_file_posix.cpp` (`MoveNoReplace`): bypass the POSIX `link()` hard-link
+  path on `__ANDROID__` (which Android SELinux blocks with `EACCES` on app-private
+  filesystems) and use `lstat()` + `rename()` instead so in-game saving succeeds
+  on Android.
+- `xam_user.cpp` (`XamUserWriteProfileSettings`): persist `kInt32`, `kInt64`,
+  `kFloat`, and `kDouble` profile settings alongside binary/Unicode settings.
+- `sdl3_audio_driver.cpp`: replace the Android no-op stub with a dynamic
+  `dlopen("libaaudio.so")` native 48 kHz float32 stereo AAudio backend so in-game
+  XMA audio plays on Android devices.
+- **Custom renderer (Windows D3D11 + Android GLES 3.2):** a Lanczos2 guest-output
+  upscale shader (`host/shaders/bytecode/d3d12_5_1/guest_output_lanczos_ps.h`,
+  source under `renderer/shaders/`) plus the standalone `rexgpu-xenos-custom`
+  module (`renderer/`) providing live no-restart internal resolution scaling on
+  Windows (`360p`–`2160p`) and Android (`360p`–`1440p`).
 - Various CMake/platform files: Android surface support, `log` linkage, NDEBUG
   for the SPIR-V target.
 

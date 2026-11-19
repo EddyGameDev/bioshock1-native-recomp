@@ -6,6 +6,50 @@ holds the current snapshot; this file holds the history.
 
 ---
 
+## Session 17 — 2026-11-19 — `v0.0.4` to `v0.0.5-experimental` (Custom GLES 3.2 Renderer, Full Touch Controls, AAudio, Save/Load Fix & Cutscene/Perf Pass)
+
+**Goal:** bring the Android and Windows ports to in-game playability with custom
+GLES 3.2 rendering, live resolution scaling, native Android audio, full Xbox 360
+touch controls, working in-game Save / Load, and smooth Bink cutscenes.
+**Status: ACHIEVED (`v0.0.5-experimental`).**
+
+Done:
+  - **Custom OpenGL ES 3.2 Xenos Renderer on Android (`renderer/src/gles3/`):**
+    built `xenos_glsl.cpp`, `gles3_backend.cpp`, `gles3_resources.cpp`,
+    `gles3_shaders.cpp`, and `android_custom_driver.cpp` with live no-restart
+    internal resolution scaling (`360p`–`1440p`, defaulting to `540p` / `2x`
+    anisotropy on fresh installs).
+  - **Full Xbox 360 Touch Controller (`TouchControlsView.kt` + `main.cpp`):**
+    added dual floating analog sticks, `LT`, `LB`, `RT`, `RB`, 4-way `D-Pad`,
+    `A`/`B`/`X`/`Y`, `L3`/`R3`, `BACK`, `START`, live `RES` pill, and `HUD` toggle.
+  - **Native Android AAudio Driver (`sdl3_audio_driver.cpp`):** replaced the
+    `#if defined(__ANDROID__)` no-op stub with a dynamic `dlopen("libaaudio.so")`
+    48 kHz float32 stereo stream and enabled `needs.audio = true`.
+  - **In-Game Save / Load Fixed (`v0.0.4.20-experimental`):**
+    1. Fixed `NtSetInformationFile` (`XFileRenameInformation`) in
+       `xboxkrnl_io_info.cpp` to strip `\??\` prefixes and handle `ObDosDevices`
+       (`0xFFFFFFFD`) in `root_dir_handle`.
+    2. Fixed Android SELinux `EACCES` (`0xC0000022`) in `host_file_posix.cpp`
+       (`MoveNoReplace`) by bypassing hard `link()` on `__ANDROID__` in favor of
+       `lstat()` + `rename()` so `Save.tmp` -> `DLContentInfo.pkg` succeeds.
+    3. Extended `XamUserWriteProfileSettings` in `xam_user.cpp` to persist
+       numeric profile types (`kInt32`, `kInt64`, `kFloat`, `kDouble`).
+  - **Cutscene, Depth & Performance Optimizations (`v0.0.5-experimental`):**
+    - Fast row-by-row `memcpy` path in `LinearizeLevel` for untiled Bink video
+      frames (fixing Andrew Ryan elevator projection stutter).
+    - Tiered texture fingerprint change-detection (dynamic/video textures checked
+      every frame; static compressed textures throttled) + capped per-frame GC.
+    - Replicated resolved depth across `RRRR` channels (`gles3_backend.cpp`) for
+      underwater fog and spotlights.
+    - Elevated GPU worker thread to display priority (`PRIO_PROCESS` `-8`/`-4`)
+      and enabled Android `sustainedPerformanceMode`.
+  - **Community & Release Packaging:** added Discord feedback server
+    (`https://discord.gg/aaDRJQNw8T`) and required **Xbox 360 World Release**
+    details (`Title ID 545407D8`, `Media ID 44E704F7`) to docs and published
+    `v0.0.5-experimental` for both Android (`.apk`) and Windows (`.zip`).
+
+---
+
 ## Session 16 — 2026-11-17 — 🎉 GOAL MET: title screen renders on Android
 
 **Goal:** render the genuine BioShock title screen on Android through the real

@@ -6,16 +6,17 @@
 >
 > **Required Game Version:** Built against the **Xbox 360 World Release** of BioShock 1 (**Title ID: `545407D8`**, **Media ID: `44E704F7`**). Make sure you own/dump this retail edition (other regional or re-release builds with different Media IDs are not supported).
 
-> **Release `v0.0.1-experimental`** — the genuine BioShock 1 title screen renders
-> on Android through a **static recompilation** pipeline and the **real ReXGlue
-> runtime**, presented by the guest `VdSwap` path. This is an **experimental
-> proof-of-concept**: the title screen and intro are verified; the game is **not
-> yet fully playable**.
+> **Release `v0.0.5-experimental`** — BioShock 1 runs natively on both **Windows** and
+> **Android** through a **static recompilation** pipeline and the **real ReXGlue
+> runtime**, featuring custom Xenos GPU renderers (**D3D11** on Windows, **OpenGL ES 3.2**
+> on Android) with live no-restart resolution scaling (`360p`–`2160p`), working in-game
+> **Save / Load**, **native AAudio sound** on Android, a **full Xbox 360 on-screen touch
+> controller**, and Bink cutscene / performance optimizations.
 
 | Platform | Status | Evidence |
 |---|---|---|
-| Windows (host recompiler) | ✅ Real title screen rendered via ReXGlue v0.11.0 + D3D12 | [`docs/screenshots/host-title.png`](docs/screenshots/host-title.png) |
-| Android (arm64-v8a, Vulkan) | ✅ Real title screen rendered via ReXGlue + Vulkan + `VdSwap` | [`docs/screenshots/android-title.png`](docs/screenshots/android-title.png) |
+| Windows (x86_64, Custom D3D11 / D3D12) | ✅ In-game playable with live `360p`–`2160p` scaling, Lanczos2 upscale, audio & saves | [`docs/screenshots/host-title.png`](docs/screenshots/host-title.png) |
+| Android (arm64-v8a, Custom GLES 3.2 / Vulkan) | ✅ In-game playable with live `360p`–`1440p` scaling, AAudio sound, full Xbox 360 touch controls & saves | [`docs/screenshots/android-title.png`](docs/screenshots/android-title.png) |
 
 ![BioShock title screen rendered on Android](docs/screenshots/android-title.png)
 
@@ -39,28 +40,36 @@ code:
   hand-written approximation.
 - **Guest-presented frames.** The title appears through the real Xenos GPU
   command processor → `VdSwap` → `vkQueuePresentKHR` path.
-- **Working on-screen controls (Android).** The touch overlay feeds a virtual
-  gamepad into the runtime's input system, so START advances from the title to
-  the in-game main menu (NEW GAME / LOAD GAME / CREDITS). A/B/X/Y and both
-  sticks (MOVE + LOOK) are wired the same way.
-- **Custom D3D11 Xenos renderer (Windows, `v0.0.3-experimental`).** Replaces
-  the default Windows D3D12 backend with a standalone D3D11 Xenos renderer
-  (`renderer/`, `rexgpu-xenos-custom`) supporting **live, no-restart internal
-  resolution scaling** (`360p`–`2160p` or `50%–400%`, default `1080p`) via
-  **F1**, live **Lanczos / Bilinear** present filter toggle via **F2**, and full
-  live settings via **F4** (`gpu.custom.*`), with `--gpu.driver=d3d12` kept as a
-  runtime fallback. See [`docs/33-CUSTOM-RENDERER.md`](docs/33-CUSTOM-RENDERER.md).
-- **No game data in the APK.** The launcher asks you to import your own ISO;
-  the XEX and full game tree are extracted at runtime into app-private storage.
-  Nothing proprietary is committed or shipped.
+- **Full Xbox 360 on-screen touch controller (Android).** The custom multi-touch
+  overlay (`TouchControlsView.kt`) provides dual floating analog sticks (MOVE +
+  LOOK), analog/digital triggers and bumpers (`LT`, `LB`, `RT`, `RB`), a 4-way
+  `D-Pad`, face buttons (`A`, `B`, `X`, `Y`), thumbstick clicks (`L3`, `R3`),
+  `BACK`, and `START`, plus a live `RES` pill (`360p`–`1440p`) and `HUD` toggle.
+- **Custom Xenos renderers (Windows D3D11 + Android OpenGL ES 3.2).** Replaces
+  the default backend with standalone Xenos renderers (`renderer/`,
+  `rexgpu-xenos-custom`) supporting **live, no-restart internal resolution
+  scaling** (`360p`–`2160p` on Windows via **F1**; `360p`–`1440p` on Android via
+  the **RES** button, default `540p` on fresh installs), live **Lanczos /
+  Bilinear** present filter toggle (**F2**), async FIFO shader compilation + disk
+  cache, tiered texture change-detection, fast row-copy Bink video uploads, and
+  RRRR depth-channel replication for underwater fog and lighting. See
+  [`docs/33-CUSTOM-RENDERER.md`](docs/33-CUSTOM-RENDERER.md).
+- **Working in-game Save / Load & native Android audio.** Full Xbox 360
+  `SaveGames:` container (`DLContentInfo.pkg` / `.bsg`) and profile persistence
+  work on both Windows and Android, paired with a native `libaaudio.so` 48 kHz
+  stereo audio driver on Android.
+- **No game data in the APK or Windows zip.** The launcher asks you to import
+  your own Xbox 360 World Release ISO (or extracted game folder on Windows);
+  nothing proprietary is committed or shipped.
 
 ## What this is *not*
 
-- Not a full game — expect the title screen, intro/legal screens and early boot
-  only. Gameplay is unverified.
+- Not a 1.0 finished product — releases are labeled `experimental` as edge-case
+  shader, lighting, and performance tuning continues across the campaign.
 - Not an emulator — there is no interpreter or JIT fallback.
 - Not a distribution of BioShock, its assets, the Xbox 360 BIOS, or any
-  Microsoft material. **You must own a legal copy of the game.**
+  Microsoft material. **You must own a legal copy of the Xbox 360 World Release
+  (`Title ID 545407D8`, `Media ID 44E704F7`).**
 
 ---
 
@@ -227,6 +236,19 @@ Releases follow an **experimental** pre-1.0 scheme:
   (`360p`–`2160p`), async FIFO shader compilation + disk cache, fast texture
   untiling, strict D3D11 binding/hazard fixes eliminating multipass flickering,
   and kernel critical-section stability fix.
+- **`v0.0.4-experimental` / `v0.0.4.20-experimental`** — Custom OpenGL ES 3.2
+  Xenos renderer for Android (`rexgpu-xenos-custom`) with live `360p`–`1440p`
+  scaling (`RES` pill), native Android 48 kHz AAudio driver (`libaaudio.so`),
+  full Xbox 360 on-screen touch controller (dual floating sticks, LT/LB/RT/RB,
+  D-Pad, A/B/X/Y, L3/R3, BACK/START), and in-game Save / Load fixes
+  (`ObDosDevices` root directory handle resolution, `\??\` prefix stripping,
+  Android SELinux `MoveNoReplace` rename fix, and numeric profile settings).
+- **`v0.0.5-experimental`** — Performance & cutscene optimization release for
+  Android and Windows: display-priority GPU worker thread, Android sustained
+  performance mode, tiered texture fingerprint change-detection, fast row-copy
+  Bink video uploads (fixing Andrew Ryan elevator cutscene lag), `RRRR` resolved
+  depth replication for underwater fog/lighting, and `540p` / `2x` anisotropy
+  default on fresh Android installs.
 
 See the [Releases page](../../releases) for notes.
 

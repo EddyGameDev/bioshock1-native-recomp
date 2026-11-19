@@ -1,6 +1,28 @@
 # Status — verified facts, not aspirations
 
-Last updated: 2026-11-17 (title screen reached).
+Last updated: 2026-11-19 (`v0.0.5-experimental` — playable in-game on Android & Windows with custom D3D11/GLES3.2 renderers, audio, full Xbox 360 touch controls, and working Save/Load).
+
+## ✅ `v0.0.5-experimental` (Android & Windows): In-Game Playable, Save/Load, Audio, Custom GLES 3.2 & D3D11 Renderers
+
+Both **Android (`arm64-v8a`)** and **Windows (`x86_64`)** run in-game through the real ReXGlue runtime and our custom Xenos GPU renderers (`renderer/`, `rexgpu-xenos-custom`):
+
+- **Required Retail Dump:** Xbox 360 **World Release** (`Title ID: 545407D8`, `Media ID: 44E704F7`).
+- **Community & Feedback Discord:** `https://discord.gg/aaDRJQNw8T`
+- **Custom OpenGL ES 3.2 Xenos Renderer on Android (`renderer/src/gles3/`):**
+  - Translates Xenos microcode shaders to GLSL ES 3.20 (`xenos_glsl.cpp`), manages EDRAM render targets and resolves (`gles3_backend.cpp`), and supports live no-restart resolution scaling (`360p`, `540p`, `720p`, `1080p`, `1440p`) via the in-game **RES** pill (defaulting to `540p` / `2x` anisotropy on fresh installs).
+  - Replicates resolved depth across all four channels (`RRRR`) so spotlights, depth maps, and underwater fog sample valid depth values.
+  - Fast row-copy `memcpy` path in `LinearizeLevel` for untiled Bink video frames (Andrew Ryan elevator screen & cutscenes) plus tiered texture fingerprint checking (every frame for dynamic/video textures, throttled for static compressed textures) and capped per-frame texture cache eviction.
+  - GPU worker thread elevated to display priority (`PRIO_PROCESS` `-8`/`-4`) paired with Android `sustainedPerformanceMode` and `appCategory="game"`.
+- **Custom D3D11 Xenos Renderer on Windows (`renderer/src/`):**
+  - Live no-restart internal resolution scaling (`360p`–`2160p` via **F1**), live Lanczos2 / Bilinear present filter (**F2**), full live `gpu.custom.*` overlay (**F4**), async FIFO FXC compilation + disk shader cache, and strict D3D11 hazard/binding hygiene.
+- **In-Game Save / Load Working (Android & Windows):**
+  - Fixed `NtSetInformationFile` (`XFileRenameInformation`) in `xboxkrnl_io_info.cpp` to handle `ObDosDevices` (`0xFFFFFFFD`) in `root_dir_handle` and strip `\??\` prefixes.
+  - Fixed Android SELinux `EACCES` (`0xC0000022`) in `host_file_posix.cpp` (`MoveNoReplace`) by bypassing hard `link()` on `__ANDROID__` in favor of `lstat()` + `rename()`, allowing `Save.tmp` → `DLContentInfo.pkg` and `.bsg` level saves to complete cleanly.
+  - Extended `XamUserWriteProfileSettings` in `xam_user.cpp` to persist `kInt32`, `kInt64`, `kFloat`, and `kDouble` settings.
+- **Native Android Audio (`libaaudio.so`):**
+  - Replaced the `#if defined(__ANDROID__)` stub in `sdl3_audio_driver.cpp` with a dynamic `dlopen("libaaudio.so")` 48 kHz float32 stereo AAudio stream and enabled `needs.audio = true` in the Android entry point.
+- **Full Xbox 360 Touch Controller (`TouchControlsView.kt`):**
+  - Dual floating analog sticks (MOVE + LOOK), `LT`, `LB`, `RT`, `RB`, 4-way `D-Pad`, `A`, `B`, `X`, `Y`, `L3`, `R3`, `BACK`, `START`, plus top-bar `RES` and `HUD` buttons.
 
 ## ✅ GOAL ACHIEVED (Android): real BioShock title screen renders on-device
 
@@ -67,10 +89,10 @@ pattern; porting the host's guest-rendered title to Android is the next phase.
 | Runtime symbols | ✅ implemented | all 9 non-ABI symbols real; `.so` 139.66 MB links with zero undefined symbols |
 | Host boot path | ✅ real runtime built | **Full ReXGlue v0.11.0 runtime built from source (MinGW)**; `bioshock1.exe` (97 MB) links all 152 recompiled TUs + real runtime; **launches to a window with D3D12 device initialized** (see `31-GOAL-TITLE-SCREEN.md`). Blocker: cross-DLL kernel module `Connect()` not called. |
 | First boot attempt (old HLE harness) | 📦 superseded | full 4 GB map + 256 MB guest thread + HLE registration; reached 2,545 HLE calls, no title screen. Kept as reference, superseded by real-runtime host build above |
-| HLE kernel completeness | ⚠️ skeleton | 8 bootstrap imports; 427 import records need handlers |
-| GLES3 game rendering | ⚠️ diagnostic only | Test pattern renders; Xenos PM4/shader translator not implemented |
-| Audio (XMA/FMOD → AAudio) | ⛔ not started | Documented in `07-GPU-XENOS-GLES3.md` / `11-ROADMAP.md` |
-| Playable game | ⛔ no | See honest status in `00-START-HERE.md` |
+| HLE kernel completeness | ✅ working | Full ReXGlue `xboxkrnl` + `xam` runtime linked; critical-section cross-thread unlock, `SaveGames:` container rename (`ObDosDevices` + Android `MoveNoReplace`), and profile settings persistence fixed |
+| Custom Xenos game rendering | ✅ working | Custom D3D11 (Windows `360p`–`2160p`) and Custom OpenGL ES 3.2 (Android `360p`–`1440p`) Xenos renderers with live scaling, async shader cache, Bink fast-path, and `RRRR` depth resolve |
+| Audio (XMA → AAudio / SDL3) | ✅ working | XMA hardware decoder active; Windows outputs via SDL3 audio, Android outputs via native 48 kHz float32 `libaaudio.so` driver |
+| Playable game | ✅ experimental (`v0.0.5`) | Playable in-game on Windows & Android with audio, full Xbox 360 touch controls, cutscenes, and working Save / Load |
 
 ## 2. What "working" means here
 
