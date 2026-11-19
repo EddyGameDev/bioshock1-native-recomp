@@ -2,12 +2,21 @@ package com.bioshock1.recomp
 
 import android.app.Activity
 import android.content.Intent
+import android.graphics.Color
 import android.net.Uri
+import android.os.Build
 import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
 import android.provider.OpenableColumns
+import android.view.Gravity
 import android.view.View
+import android.view.WindowInsets
+import android.view.WindowInsetsController
+import android.view.WindowManager
 import android.widget.Button
 import android.widget.FrameLayout
+import android.widget.LinearLayout
 import android.widget.TextView
 import android.widget.Toast
 import kotlinx.coroutines.CoroutineScope
@@ -17,17 +26,52 @@ import kotlinx.coroutines.withContext
 import java.io.File
 
 class MainActivity : Activity() {
+    private lateinit var launcherPanel: View
     private lateinit var status: TextView
     private lateinit var importButton: Button
     private lateinit var startButton: Button
+    private lateinit var driverButton: Button
+    private lateinit var scaleButton: Button
+    private lateinit var upscaleButton: Button
+    private lateinit var fxaaButton: Button
+    private lateinit var perfButton: Button
     private lateinit var container: FrameLayout
     private var surface: GameSurfaceView? = null
+    private var touchOverlay: TouchControlsView? = null
+    private var fpsView: TextView? = null
+    private var liveResBtn: TextView? = null
+    private var liveFilterBtn: TextView? = null
+    private var liveTouchBtn: TextView? = null
+
+    private val prefs by lazy { getSharedPreferences("bs1_render_prefs", MODE_PRIVATE) }
+    private val resPresets = listOf("360p", "540p", "720p", "900p", "1080p", "1440p")
+    private var driverMode = "custom"
+    private var internalRes = "720p"
+    private var vkScale = 1
+    private var upscaleMode = "lanczos"
+    private var fxaaEnabled = true
+    private var perfModeEnabled = true
+
+    private val hudHandler = Handler(Looper.getMainLooper())
+    private var lastPresentCount = 0L
+    private var lastFpsTimeNs = 0L
+    private val fpsRunnable = object : Runnable {
+        override fun run() {
+            val now = System.nanoTime()
+            val count = NativeBridge.nativeGetPresentCount()
+            if (lastFpsTimeNs != 0L && now > lastFpsTimeNs) {
+                val dtSec = (now - lastFpsTimeNs) / 1e9
+                val fps = ((count - lastPresentCount) / dtSec).toInt().coerceAtLeast(0)
+                fpsView?.text = "${fps} FPS"
+            }
+            lastPresentCount = count
+            lastFpsTimeNs = now
+            hudHandler.postDelayed(this, 1000)
+        }
+    }
 
     private val gameDir: File by lazy { File(filesDir, "game").apply { mkdirs() } }
 
-    // SDL3's Android message box path calls this reflectively on the context
-    // Activity. For this headless boot test just log the message and return a
-    // neutral button ID instead of showing a native dialog.
     fun messageboxShowMessageBox(
         flags: Int, title: String?, message: String?,
         buttonFlags: IntArray?, buttonIds: IntArray?,
@@ -39,30 +83,129 @@ class MainActivity : Activity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         org.libsdl.app.SDLActivity.setContext(this)
         setContentView(R.layout.activity_main)
+        applyImmersiveFullscreen()
+
+        launcherPanel = findViewById(R.id.launcherPanel)
         status = findViewById(R.id.status)
         importButton = findViewById(R.id.importButton)
         startButton = findViewById(R.id.startButton)
+        driverButton = findViewById(R.id.driverButton)
+        scaleButton = findViewById(R.id.scaleButton)
+        upscaleButton = findViewById(R.id.upscaleButton)
+        fxaaButton = findViewById(R.id.fxaaButton)
+        perfButton = findViewById(R.id.perfButton)
         container = findViewById(R.id.surfaceContainer)
+
+        driverMode = prefs.getString("driver_mode", "custom") ?: "custom"
+        internalRes = prefs.getString("internal_res", "720p") ?: "720p"
+        if (internalRes !in resPresets) internalRes = "720p"
+        vkScale = prefs.getInt("res_scale", 1).coerceIn(1, 2)
+        upscaleMode = prefs.getString("upscale_mode", "lanczos") ?: "lanczos"
+        fxaaEnabled = prefs.getBoolean("fxaa", true)
+        perfModeEnabled = prefs.getBoolean("perf_mode", true)
+
+        // Optional ADB test overrides via Intent extras.
+        intent?.getStringExtra("driver")?.let { if (it == "custom" || it == "vulkan") driverMode = it }
+        intent?.getStringExtra("res")?.let { if (it in resPresets) internalRes = it }
+
+        driverButton.setOnClickListener {
+            driverMode = if (driverMode == "custom") "vulkan" else "custom"
+            prefs.edit().putString("driver_mode", driverMode).apply()
+            updateSettingButtons()
+        }
+        scaleButton.setOnClickListener {
+            if (driverMode == "custom") {
+                val idx = resPresets.indexOf(internalRes).coerceAtLeast(0)
+                internalRes = resPresets[(idx + 1) % resPresets.size]
+                prefs.edit().putString("internal_res", internalRes).apply()
+            } else {
+                vkScale = if (vkScale == 1) 2 else 1
+                prefs.edit().putInt("res_scale", vkScale).apply()
+            }
+            updateSettingButtons()
+        }
+        upscaleButton.setOnClickListener {
+            upscaleMode = if (upscaleMode == "lanczos") "bilinear" else "lanczos"
+            prefs.edit().putString("upscale_mode", upscaleMode).apply()
+            updateSettingButtons()
+        }
+        fxaaButton.setOnClickListener {
+            fxaaEnabled = !fxaaEnabled
+            prefs.edit().putBoolean("fxaa", fxaaEnabled).apply()
+            updateSettingButtons()
+        }
+        perfButton.setOnClickListener {
+            perfModeEnabled = !perfModeEnabled
+            prefs.edit().putBoolean("perf_mode", perfModeEnabled).apply()
+            updateSettingButtons()
+        }
 
         importButton.setOnClickListener { openDocument() }
         startButton.setOnClickListener { startGame() }
+        updateSettingButtons()
         updateStatus()
+
+        if (intent?.getBooleanExtra("autostart", false) == true) {
+            container.post { startGame() }
+        }
+    }
+
+    override fun onWindowFocusChanged(hasFocus: Boolean) {
+        super.onWindowFocusChanged(hasFocus)
+        if (hasFocus) applyImmersiveFullscreen()
+    }
+
+    override fun onDestroy() {
+        hudHandler.removeCallbacks(fpsRunnable)
+        super.onDestroy()
+    }
+
+    @Suppress("DEPRECATION")
+    private fun applyImmersiveFullscreen() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            window.setDecorFitsSystemWindows(false)
+            window.insetsController?.let { ctrl ->
+                ctrl.hide(WindowInsets.Type.statusBars() or WindowInsets.Type.navigationBars())
+                ctrl.systemBarsBehavior =
+                    WindowInsetsController.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+            }
+        } else {
+            window.decorView.systemUiVisibility = (
+                View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY
+                    or View.SYSTEM_UI_FLAG_FULLSCREEN
+                    or View.SYSTEM_UI_FLAG_HIDE_NAVIGATION
+                    or View.SYSTEM_UI_FLAG_LAYOUT_STABLE
+                    or View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION
+                    or View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN
+            )
+        }
+    }
+
+    private fun updateSettingButtons() {
+        val isCustom = driverMode == "custom"
+        driverButton.text = if (isCustom) "Driver: Custom GLES3" else "Driver: Vulkan"
+        scaleButton.text = if (isCustom) {
+            "Internal: $internalRes (Live)"
+        } else {
+            if (vkScale == 2) "Scale: 2x (1440p)" else "Scale: 1x (720p)"
+        }
+        upscaleButton.text = if (upscaleMode == "lanczos") "Filter: Lanczos" else "Filter: Bilinear"
+        fxaaButton.visibility = if (isCustom) View.GONE else View.VISIBLE
+        perfButton.visibility = if (isCustom) View.GONE else View.VISIBLE
+        fxaaButton.text = if (fxaaEnabled) "AA: FXAA" else "AA: Off"
+        perfButton.text = if (perfModeEnabled) "Perf Mode: ON" else "Perf Mode: OFF"
     }
 
     private fun updateStatus() {
         val xex = File(gameDir, "default.xex")
-        // extractNativeLibs=false loads the .so directly from the APK, so
-        // nativeLibraryDir may be empty. A successful JNI call is the real proof.
         val hleCount = NativeBridge.nativeHleImportCount()
         status.text = buildString {
-            appendLine("BioShock 1 - native static recomp (preview)")
-            appendLine("Engine library: ${if (hleCount > 0) "loaded" else "MISSING"}")
-            appendLine("XEX extracted: ${if (xex.exists()) "${xex.length()} bytes" else "no"}")
-            appendLine("HLE imports implemented: $hleCount")
-            appendLine()
-            appendLine("Import your own ISO, then tap Start.")
+            appendLine("BioShock 1 - Native Static ReComp (Android -O2)")
+            appendLine("Engine: ${if (hleCount > 0) "loaded" else "MISSING"} | XEX: ${if (xex.exists()) "${xex.length()} bytes" else "not imported"}")
+            appendLine("Custom GLES 3.2 renderer supports live 360p-1440p internal resolution.")
         }
     }
 
@@ -95,8 +238,6 @@ class MainActivity : Activity() {
                         val entry = disc.find("default.xex")
                             ?: throw IllegalArgumentException("default.xex not found in ISO")
                         disc.extract(entry, File(gameDir, "default.xex"))
-                        // Full game tree: the guest filesystem needs the Unreal
-                        // packages and FMOD banks, not just the executable.
                         disc.extractAll(gameDir) { done, total, bytes, totalBytes ->
                             if (done % 16 == 0 || done == total) {
                                 runOnUiThread {
@@ -132,6 +273,14 @@ class MainActivity : Activity() {
         return uri.lastPathSegment
     }
 
+    private fun makeHudPill(text: String): TextView = TextView(this).apply {
+        this.text = text
+        textSize = 11f
+        setTextColor(Color.argb(230, 235, 245, 255))
+        setBackgroundColor(Color.argb(130, 14, 22, 34))
+        setPadding(16, 8, 16, 8)
+    }
+
     private fun startGame() {
         if (surface != null) return
         if (!File(gameDir, "default.xex").exists()) {
@@ -140,12 +289,14 @@ class MainActivity : Activity() {
         }
         surface = GameSurfaceView(this, null).apply {
             setGameRoot(gameDir.absolutePath)
+            setRenderConfig(driverMode, internalRes, vkScale, upscaleMode, fxaaEnabled, perfModeEnabled)
             layoutParams = FrameLayout.LayoutParams(
                 FrameLayout.LayoutParams.MATCH_PARENT,
                 FrameLayout.LayoutParams.MATCH_PARENT,
             )
         }
         container.addView(surface)
+
         val controls = TouchControlsView(this).apply {
             listener = TouchControlsView.Listener { axes, buttons ->
                 NativeBridge.nativeSetControls(axes, buttons)
@@ -155,10 +306,77 @@ class MainActivity : Activity() {
                 FrameLayout.LayoutParams.MATCH_PARENT,
             )
         }
+        touchOverlay = controls
         container.addView(controls)
-        importButton.visibility = View.GONE
-        startButton.visibility = View.GONE
-        status.visibility = View.GONE
+
+        val hudBar = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(16, 12, 16, 12)
+            layoutParams = FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.WRAP_CONTENT,
+                FrameLayout.LayoutParams.WRAP_CONTENT,
+                Gravity.TOP or Gravity.START,
+            )
+        }
+        val fps = makeHudPill("-- FPS").apply {
+            layoutParams = LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.WRAP_CONTENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT,
+            ).apply { marginEnd = 8 }
+        }
+        hudBar.addView(fps)
+        fpsView = fps
+
+        if (driverMode == "custom") {
+            val resBtn = makeHudPill("RES: $internalRes").apply {
+                layoutParams = LinearLayout.LayoutParams(
+                    LinearLayout.LayoutParams.WRAP_CONTENT,
+                    LinearLayout.LayoutParams.WRAP_CONTENT,
+                ).apply { marginEnd = 8 }
+                setOnClickListener {
+                    val idx = resPresets.indexOf(internalRes).coerceAtLeast(0)
+                    internalRes = resPresets[(idx + 1) % resPresets.size]
+                    prefs.edit().putString("internal_res", internalRes).apply()
+                    NativeBridge.nativeSetInternalResolution(internalRes)
+                    text = "RES: $internalRes"
+                }
+            }
+            hudBar.addView(resBtn)
+            liveResBtn = resBtn
+        }
+
+        val filterBtn = makeHudPill(if (upscaleMode == "lanczos") "LANCZOS" else "BILINEAR").apply {
+            layoutParams = LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.WRAP_CONTENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT,
+            ).apply { marginEnd = 8 }
+            setOnClickListener {
+                upscaleMode = if (upscaleMode == "lanczos") "bilinear" else "lanczos"
+                prefs.edit().putString("upscale_mode", upscaleMode).apply()
+                NativeBridge.nativeSetUpscaleMode(upscaleMode)
+                text = if (upscaleMode == "lanczos") "LANCZOS" else "BILINEAR"
+            }
+        }
+        val touchBtn = makeHudPill("TOUCH: ON").apply {
+            setOnClickListener {
+                val nextVisible = touchOverlay?.visibility != View.VISIBLE
+                touchOverlay?.visibility = if (nextVisible) View.VISIBLE else View.GONE
+                text = if (nextVisible) "TOUCH: ON" else "TOUCH: OFF"
+            }
+        }
+        liveFilterBtn = filterBtn
+        liveTouchBtn = touchBtn
+        hudBar.addView(filterBtn)
+        hudBar.addView(touchBtn)
+        container.addView(hudBar)
+
+        launcherPanel.visibility = View.GONE
+        applyImmersiveFullscreen()
+
+        lastPresentCount = 0L
+        lastFpsTimeNs = 0L
+        hudHandler.postDelayed(fpsRunnable, 1000)
     }
 
     companion object {

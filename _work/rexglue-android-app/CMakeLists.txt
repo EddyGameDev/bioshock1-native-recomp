@@ -30,5 +30,11 @@ target_compile_definitions(bioshock1-android PRIVATE
 )
 # NDK r30 (Clang 21) libc++ has native std::atomic_ref and jthread, so no shim.
 target_include_directories(bioshock1-android PRIVATE "${REXSDK_DIR}/thirdparty/sdl3/include")
-target_link_libraries(bioshock1-android PRIVATE rex::app log android
-  "${REXSDK_DIR}/thirdparty/../out/linux-arm64/libSDL3d.so")
+target_link_libraries(bioshock1-android PRIVATE rex::app log android dl SDL3::SDL3-shared)
+
+if (EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/../../renderer/CMakeLists.txt")
+  add_subdirectory("${CMAKE_CURRENT_SOURCE_DIR}/../../renderer" custom-renderer)
+  if (TARGET rexgpu-xenos-custom)
+    add_dependencies(bioshock1-android rexgpu-xenos-custom)
+  endif ()
+endif ()

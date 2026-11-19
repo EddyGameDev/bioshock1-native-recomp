@@ -605,18 +605,23 @@ bool Pm4Processor::ExecuteType3(DwordReader& reader, uint32_t packet, std::stop_
       if (sampleAddr != 0 && memory_) {
         if (auto writable = memory_->GetWritablePhysicalSpan({sampleAddr, 32})) {
           auto* words = reinterpret_cast<uint32_t*>(writable->data());
-          const uint32_t finished = ByteSwap32(0xFFFFFEEDu);
-          if (words[4] == finished || words[6] == finished) {
-            const uint32_t fake = ByteSwap32(1u);
-            words[0] = fake;
-            words[1] = 0;
-            words[2] = 0;
-            words[3] = 0;
-            words[4] = fake;
-            words[5] = 0;
-            words[6] = fake;
-            words[7] = 0;
-          }
+          constexpr uint32_t kFinishedLE = 0xFFFFFEEDu;
+          const uint32_t kFinishedBE = ByteSwap32(0xFFFFFEEDu);
+          const bool isEndLE = (words[2] == kFinishedLE || words[3] == kFinishedLE ||
+                                words[4] == kFinishedLE || words[5] == kFinishedLE);
+          const bool isEndBE = (words[2] == kFinishedBE || words[3] == kFinishedBE ||
+                                words[4] == kFinishedBE || words[5] == kFinishedBE);
+          const uint32_t samples = (isEndLE || isEndBE)
+                                       ? (isEndBE ? ByteSwap32(1000u) : 1000u)
+                                       : 0u;
+          words[0] = samples;
+          words[1] = 0;
+          words[6] = 0;
+          words[7] = 0;
+          std::atomic_ref<uint32_t>(words[3]).store(0u, std::memory_order_release);
+          std::atomic_ref<uint32_t>(words[2]).store(0u, std::memory_order_release);
+          std::atomic_ref<uint32_t>(words[5]).store(0u, std::memory_order_release);
+          std::atomic_ref<uint32_t>(words[4]).store(samples, std::memory_order_release);
         }
       }
       return true;

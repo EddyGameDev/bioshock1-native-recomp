@@ -9,14 +9,19 @@ import android.view.SurfaceHolder
 import android.view.SurfaceView
 
 /**
- * Surface backed game view. The ReXGlue runtime renders with Vulkan into the
- * ANativeWindow. SDL3 requires RunFrame()/SDL_PumpEvents() on the main thread,
- * so frames are driven via a Handler posted to the main Looper (~60 fps).
+ * Surface backed game view. Supports both our standalone Custom GLES 3.2 Xenos
+ * renderer (live fractional internal resolution) and ReXGlue Vulkan fallback.
  */
 class GameSurfaceView(context: Context, attrs: AttributeSet?) : SurfaceView(context, attrs),
     SurfaceHolder.Callback {
 
     private var gameRoot: String? = null
+    private var driverMode: String = "custom"
+    private var internalRes: String = "720p"
+    private var vkScale: Int = 1
+    private var upscaleMode: String = "lanczos"
+    private var fxaa: Boolean = true
+    private var perfMode: Boolean = true
     private var initialized = false
     private val mainHandler = Handler(Looper.getMainLooper())
     private val frameRunnable = object : Runnable {
@@ -30,6 +35,22 @@ class GameSurfaceView(context: Context, attrs: AttributeSet?) : SurfaceView(cont
 
     fun setGameRoot(path: String) { gameRoot = path }
 
+    fun setRenderConfig(
+        driver: String,
+        resPreset: String,
+        scale: Int,
+        upscale: String,
+        enableFxaa: Boolean,
+        enablePerfMode: Boolean,
+    ) {
+        driverMode = if (driver == "vulkan") "vulkan" else "custom"
+        internalRes = resPreset
+        vkScale = scale.coerceIn(1, 2)
+        upscaleMode = if (upscale == "bilinear") "bilinear" else "lanczos"
+        fxaa = enableFxaa
+        perfMode = enablePerfMode
+    }
+
     override fun surfaceCreated(holder: SurfaceHolder) {
         val root = gameRoot ?: return
         try {
@@ -39,8 +60,13 @@ class GameSurfaceView(context: Context, attrs: AttributeSet?) : SurfaceView(cont
             Log.e("BS1", "SDL bootstrap failed: ${t.message}")
         }
         org.libsdl.app.SDLActivity.setSurfaceOnly(holder.surface)
-        initialized = NativeBridge.nativeInit(root, width, height) == 1
-        Log.d("BS1", "nativeInit(root=$root, ${width}x$height) -> $initialized")
+        initialized = NativeBridge.nativeInitCustom(
+            root, driverMode, internalRes, vkScale, upscaleMode, fxaa, perfMode
+        ) == 1
+        Log.d(
+            "BS1",
+            "nativeInitCustom(driver=$driverMode, res=$internalRes, vkScale=${vkScale}x, upscale=$upscaleMode, ${width}x$height) -> $initialized",
+        )
         try {
             org.libsdl.app.SDLActivity.surfaceReady(holder.surface, width, height)
             Log.d("BS1", "surfaceReady ok")

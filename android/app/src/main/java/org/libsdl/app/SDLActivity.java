@@ -2,7 +2,13 @@ package org.libsdl.app;
 
 /** Auto-generated SDL3 JNI method declaration shim (44 methods). */
 public class SDLActivity {
-    static { System.loadLibrary("SDL3d"); }
+    static {
+        try {
+            System.loadLibrary("SDL3");
+        } catch (UnsatisfiedLinkError e) {
+            System.loadLibrary("SDL3d");
+        }
+    }
     static native java.lang.String nativeGetVersion();
     static native void nativeSetupJNI();
     static native void nativeInitMainThread();

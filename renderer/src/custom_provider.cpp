@@ -1,4 +1,8 @@
+#if defined(__ANDROID__)
+#include "gles3/android_custom_driver.h"
+#else
 #include "custom_driver.h"
+#endif
 
 #include <array>
 #include <memory>

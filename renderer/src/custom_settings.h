@@ -18,9 +18,15 @@ class CustomRendererSettings final : public rex::SettingOwner {
  public:
   CustomRendererSettings() : rex::SettingOwner("gpu.custom") {}
 
+#if defined(__ANDROID__)
+  REX_SETTING(std::string, internal_resolution, "720p",
+              "Target internal render height (360p, 540p, 720p, 900p, 1080p, 1440p, 2160p, or scale)",
+              rex::Allowed("scale", "360p", "540p", "720p", "900p", "1080p", "1440p", "2160p"));
+#else
   REX_SETTING(std::string, internal_resolution, "1080p",
-              "Target internal render height (360p, 720p, 900p, 1080p, 1440p, 2160p, or scale)",
-              rex::Allowed("scale", "360p", "720p", "900p", "1080p", "1440p", "2160p"));
+              "Target internal render height (360p, 540p, 720p, 900p, 1080p, 1440p, 2160p, or scale)",
+              rex::Allowed("scale", "360p", "540p", "720p", "900p", "1080p", "1440p", "2160p"));
+#endif
 
   REX_SETTING(i32, resolution_scale_pct, 200,
               "Internal resolution scale percentage when internal_resolution=scale (50-400%)",
@@ -50,6 +56,7 @@ inline u32 ParseTargetHeight(const std::string& preset) {
     lower.push_back(static_cast<char>(std::tolower(c)));
   }
   if (lower == "360p") return 360;
+  if (lower == "540p") return 540;
   if (lower == "720p") return 720;
   if (lower == "900p") return 900;
   if (lower == "1080p") return 1080;

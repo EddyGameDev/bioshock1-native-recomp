@@ -1,9 +1,11 @@
 // Android JNI entry point for the ReXGlue-compiled BioShock title.
 //
-// Creates a TitleApp, initializes it with the game_root passed from Kotlin,
-// launches the title and then pumps RunFrame from JNI. The real ReXGlue runtime
-// (kernel + Vulkan GPU backend) is linked from the SDK .so files shipped in the
-// APK; generated PPC->C++ code is linked into this library.
+// Supports BOTH:
+//   - "custom" : standalone custom GLES 3.2 Xenos renderer (librexgpu-xenos-custom.so)
+//                with true live, zero-restart internal resolution scaling
+//                (360p / 540p / 720p / 900p / 1080p / 1440p) + Lanczos2 upscale
+//   - "vulkan" : ReXGlue Vulkan Xenos renderer (librexgpu-xenos-vulkan.so)
+//                with custom SPIR-V Lanczos2 upscale + persistent VkPipelineCache
 #include <SDL3/SDL.h>
 #include <SDL3/SDL_main.h>
 #include <rex/app/title_app.h>
@@ -14,9 +16,12 @@
 #include <rex/hid/pad.h>
 #include <rex/module.h>
 #include <rex/result.h>
+#include <rex/setting.h>
+#include <rex/settings_registry.h>
 
 #include <algorithm>
 #include <array>
+#include <dlfcn.h>
 #include <jni.h>
 #include <memory>
 #include <mutex>
@@ -31,14 +36,11 @@
 
 namespace {
 
-// ---- Virtual gamepad fed by the on-screen touch controls --------------------
-// The guest reads XamInputGetState -> IInputSystem::GetState -> IInputDriver::
-// GetDeviceState. The SDL3 input driver has no gamepad on Android, so we provide
-// a tiny always-connected driver whose state comes from nativeSetControls().
 constexpr u64 kTouchPadValue = 0x54554348;  // "TUCH"
 
 std::mutex g_touch_mutex;
 rex::hid::PadState g_touch_pad{};
+u16 g_touch_latched_buttons = 0;
 
 rex::Error NotTouchPad() {
   return rex::Error(rex::ErrorCategory::kNotFound, "not the touch pad");
@@ -61,7 +63,10 @@ class TouchInputDriver final : public rex::hid::IInputDriver {
   [[nodiscard]] rex::Result<rex::hid::PadState> GetDeviceState(rex::hid::PadDeviceID id) override {
     if (id.value != kTouchPadValue) return std::unexpected(NotTouchPad());
     std::lock_guard<std::mutex> lock(g_touch_mutex);
-    return g_touch_pad;
+    rex::hid::PadState out = g_touch_pad;
+    out.buttons |= g_touch_latched_buttons;
+    g_touch_latched_buttons = 0;
+    return out;
   }
   [[nodiscard]] rex::Result<rex::hid::PadCapabilities> GetDeviceCapabilities(
       rex::hid::PadDeviceID id) override {
@@ -128,38 +133,83 @@ class Bioshock1App : public rex::app::TitleApp {
 
 std::unique_ptr<Bioshock1App> g_app;
 bool g_launched = false;
+
+using PresentCountFn = u64 (*)();
+PresentCountFn g_get_present_count = nullptr;
+
+PresentCountFn ResolvePresentCounter() {
+  if (void* h = dlopen("librexgpu-xenos-custom.so", RTLD_NOLOAD | RTLD_NOW)) {
+    if (auto* fn = reinterpret_cast<PresentCountFn>(dlsym(h, "rex_android_get_custom_present_count"))) {
+      return fn;
+    }
+  }
+  if (void* h = dlopen("librexgpu-xenos-vulkan.so", RTLD_NOLOAD | RTLD_NOW)) {
+    if (auto* fn = reinterpret_cast<PresentCountFn>(dlsym(h, "rex_android_get_vk_present_count"))) {
+      return fn;
+    }
+  }
+  if (auto* fn = reinterpret_cast<PresentCountFn>(dlsym(RTLD_DEFAULT, "rex_android_get_custom_present_count"))) {
+    return fn;
+  }
+  if (auto* fn = reinterpret_cast<PresentCountFn>(dlsym(RTLD_DEFAULT, "rex_android_get_vk_present_count"))) {
+    return fn;
+  }
+  return nullptr;
 }
 
-extern "C" {
+int InitRuntime(const std::string& root, const std::string& driverMode,
+                const std::string& internalRes, int vkScale, const std::string& upscaleMode,
+                bool fxaa, bool perfMode) {
+  const std::string driver = (driverMode == "vulkan") ? "vulkan" : "custom";
+  const int scale = std::clamp(vkScale, 1, 2);
+  const std::string upscale = (upscaleMode == "bilinear") ? "bilinear" : "lanczos";
+  const std::string resPreset = internalRes.empty() ? "720p" : internalRes;
 
-JNIEXPORT jint JNICALL
-Java_com_bioshock1_recomp_NativeBridge_nativeInit(JNIEnv* env, jclass,
-                                                  jstring gameRoot,
-                                                  jint, jint) {
-  if (!gameRoot) return 0;
-  const char* chars = env->GetStringUTFChars(gameRoot, nullptr);
-  if (!chars) return 0;
-  const std::string root(chars);
-  env->ReleaseStringUTFChars(gameRoot, chars);
-
-  AJLOG("nativeInit start root=%s", root.c_str());
-  // Our entry point is not SDL_main, so SDL never got SDL_SetMainReady(). The
-  // SDL3 Android JNI bootstrap's checkJNIReady() only calls it when all Java
-  // callbacks are present; call it explicitly so SDL_InitSubSystem works.
+  AJLOG("nativeInit start root=%s driver=%s res=%s vkScale=%dx upscale=%s fxaa=%d perf=%d",
+        root.c_str(), driver.c_str(), resPreset.c_str(), scale, upscale.c_str(),
+        fxaa ? 1 : 0, perfMode ? 1 : 0);
   SDL_SetMainReady();
   g_app = std::make_unique<Bioshock1App>();
-  const std::string arg = "--game_data_root=" + root;
-  std::vector<std::string> args = {arg};
-  // The guest reads low guest memory (~0x10) during config-init; the runtime's
-  // default protect_zero makes the first 64 KiB fault, so disable it here.
-  args.push_back("--runtime.protect_zero=false");
-  // Dump generated SPIR-V shaders so they can be validated (Adreno driver rejects them).
+
   const std::string files_dir = root.substr(0, root.find_last_of('/'));
-  args.push_back("--gpu.xenos.dump_shaders=" + files_dir + "/shaders");
-  // Use the virtual touch gamepad as the input source (SDL3 has no Android gamepad here).
-  args.push_back("--hid.drivers=touch");
+  std::vector<std::string> args = {
+      "--game_data_root=" + root,
+      "--cache_root=" + files_dir + "/cache",
+      "--user_data_root=" + files_dir + "/user",
+      "--log.file_name=" + files_dir + "/bs1.log",
+      "--gpu.driver=" + driver,
+      "--runtime.protect_zero=false",
+      "--hid.drivers=touch",
+  };
+
+  if (driver == "custom") {
+    args.push_back("--gpu.custom.internal_resolution=" + resPreset);
+    args.push_back("--gpu.custom.present_filter=" + upscale);
+    args.push_back("--gpu.custom.anisotropy=8");
+    args.push_back("--gpu.custom.letterbox=true");
+    args.push_back("--gpu.custom.vsync=true");
+  } else {
+    args.push_back("--gpu.resolution_scale_x=" + std::to_string(scale));
+    args.push_back("--gpu.resolution_scale_y=" + std::to_string(scale));
+    args.push_back("--gpu.xenos.present_upscale=" + upscale);
+    args.push_back(std::string("--gpu.xenos.swap_post_effect=") + (fxaa ? "fxaa" : "none"));
+    args.push_back("--gpu.xenos.store_shaders=true");
+    args.push_back("--gpu.xenos.async_shader_compilation=true");
+    args.push_back("--gpu.vulkan.pipeline_creation_threads=4");
+    args.push_back("--gpu.vulkan.async_skip_incomplete_frames=false");
+    args.push_back("--gpu.vulkan.log_debug_messages=false");
+    if (perfMode) {
+      args.push_back("--gpu.xenos.native_2x_msaa=false");
+      args.push_back("--gpu.xenos.gamma_render_target_as_unorm16=false");
+      args.push_back("--gpu.xenos.readback_memexport=false");
+      args.push_back("--gpu.vulkan.readback_memexport=false");
+      args.push_back("--gpu.xenos.texture_cache_memory_limit_soft=256");
+      args.push_back("--gpu.xenos.texture_cache_memory_limit_hard=512");
+    }
+  }
+
   const auto cli = rex::CLIArgList::Parse(args);
-  AJLOG("calling Init");
+  AJLOG("calling Init (driver=%s)", driver.c_str());
   auto init_result = g_app->Init(cli);
   if (!init_result) {
     AJLOG("Init FAILED: %s", init_result.error().GetDescription().c_str());
@@ -171,9 +221,104 @@ Java_com_bioshock1_recomp_NativeBridge_nativeInit(JNIEnv* env, jclass,
     AJLOG("LaunchTitle FAILED: %s", launch_result.error().GetDescription().c_str());
     return 0;
   }
-  AJLOG("LaunchTitle OK");
+  g_get_present_count = ResolvePresentCounter();
+  AJLOG("LaunchTitle OK (present_counter=%s)", g_get_present_count ? "linked" : "none");
   g_launched = true;
   return 1;
+}
+
+std::string JStringToStd(JNIEnv* env, jstring s, const char* fallback = "") {
+  if (!s) return fallback;
+  const char* chars = env->GetStringUTFChars(s, nullptr);
+  if (!chars) return fallback;
+  std::string out(chars);
+  env->ReleaseStringUTFChars(s, chars);
+  return out;
+}
+
+}  // namespace
+
+extern "C" {
+
+JNIEXPORT jint JNICALL
+Java_com_bioshock1_recomp_NativeBridge_nativeInit(JNIEnv* env, jclass,
+                                                  jstring gameRoot, jint, jint) {
+  const std::string root = JStringToStd(env, gameRoot);
+  if (root.empty()) return 0;
+  return InitRuntime(root, "custom", "720p", 1, "lanczos", false, true);
+}
+
+JNIEXPORT jint JNICALL
+Java_com_bioshock1_recomp_NativeBridge_nativeInitWithConfig(JNIEnv* env, jclass,
+                                                            jstring gameRoot,
+                                                            jint resScale,
+                                                            jstring upscaleMode,
+                                                            jboolean fxaa,
+                                                            jboolean perfMode) {
+  const std::string root = JStringToStd(env, gameRoot);
+  if (root.empty()) return 0;
+  const std::string upscale = JStringToStd(env, upscaleMode, "lanczos");
+  return InitRuntime(root, "vulkan", "720p", static_cast<int>(resScale), upscale,
+                     fxaa != JNI_FALSE, perfMode != JNI_FALSE);
+}
+
+JNIEXPORT jint JNICALL
+Java_com_bioshock1_recomp_NativeBridge_nativeInitCustom(JNIEnv* env, jclass,
+                                                        jstring gameRoot,
+                                                        jstring driverMode,
+                                                        jstring internalRes,
+                                                        jint vkScale,
+                                                        jstring upscaleMode,
+                                                        jboolean fxaa,
+                                                        jboolean perfMode) {
+  const std::string root = JStringToStd(env, gameRoot);
+  if (root.empty()) return 0;
+  const std::string driver = JStringToStd(env, driverMode, "custom");
+  const std::string res = JStringToStd(env, internalRes, "720p");
+  const std::string upscale = JStringToStd(env, upscaleMode, "lanczos");
+  return InitRuntime(root, driver, res, static_cast<int>(vkScale), upscale,
+                     fxaa != JNI_FALSE, perfMode != JNI_FALSE);
+}
+
+JNIEXPORT jboolean JNICALL
+Java_com_bioshock1_recomp_NativeBridge_nativeSetInternalResolution(JNIEnv* env, jclass,
+                                                                   jstring presetStr) {
+  if (!g_launched || !presetStr) return JNI_FALSE;
+  const std::string preset = JStringToStd(env, presetStr, "720p");
+  if (auto found = REX_SETTINGS().Find("gpu.custom.internal_resolution")) {
+    auto res = REX_SETTINGS().SetText(rex::SettingLayer::kRuntime,
+                                      "gpu.custom.internal_resolution", preset);
+    AJLOG("live internal_resolution -> %s (%s)", preset.c_str(), res ? "ok" : "err");
+    return res ? JNI_TRUE : JNI_FALSE;
+  }
+  return JNI_FALSE;
+}
+
+JNIEXPORT jboolean JNICALL
+Java_com_bioshock1_recomp_NativeBridge_nativeSetUpscaleMode(JNIEnv* env, jclass,
+                                                            jstring upscaleMode) {
+  if (!g_launched || !upscaleMode) return JNI_FALSE;
+  const std::string raw = JStringToStd(env, upscaleMode, "lanczos");
+  const std::string mode = (raw == "bilinear") ? "bilinear" : "lanczos";
+  if (REX_SETTINGS().Find("gpu.custom.present_filter")) {
+    auto res = REX_SETTINGS().SetText(rex::SettingLayer::kRuntime,
+                                      "gpu.custom.present_filter", mode);
+    AJLOG("live custom present_filter -> %s (%s)", mode.c_str(), res ? "ok" : "err");
+    return res ? JNI_TRUE : JNI_FALSE;
+  }
+  auto res = REX_SETTINGS().SetText(rex::SettingLayer::kRuntime,
+                                    "gpu.xenos.present_upscale", mode);
+  AJLOG("live vulkan present_upscale -> %s (%s)", mode.c_str(), res ? "ok" : "err");
+  return res ? JNI_TRUE : JNI_FALSE;
+}
+
+JNIEXPORT jlong JNICALL
+Java_com_bioshock1_recomp_NativeBridge_nativeGetPresentCount(JNIEnv*, jclass) {
+  if (!g_launched) return 0;
+  if (!g_get_present_count) {
+    g_get_present_count = ResolvePresentCounter();
+  }
+  return g_get_present_count ? static_cast<jlong>(g_get_present_count()) : 0;
 }
 
 JNIEXPORT void JNICALL
@@ -197,14 +342,11 @@ Java_com_bioshock1_recomp_NativeBridge_nativeShutdown(JNIEnv*, jclass) {
     g_app.reset();
   }
   g_launched = false;
+  g_get_present_count = nullptr;
 }
 
 JNIEXPORT void JNICALL
 Java_com_bioshock1_recomp_NativeBridge_nativeResize(JNIEnv*, jclass, jint w, jint h) {
-  // On Android the SDL pixel-size-changed event isn't reaching the UI resize
-  // handler in this headless-bootstrap setup, leaving the presenter's surface
-  // size at 0 and paint mode disconnected (black screen). Notify the graphics
-  // system directly so the present thread connects the surface and presents.
   if (g_app) {
     g_app->NotifySurfaceResized(static_cast<u32>(w), static_cast<u32>(h));
     AJLOG("NotifySurfaceResized %dx%d", w, h);
@@ -219,7 +361,7 @@ Java_com_bioshock1_recomp_NativeBridge_nativeStatus(JNIEnv* env, jclass) {
 
 JNIEXPORT jint JNICALL
 Java_com_bioshock1_recomp_NativeBridge_nativeHleImportCount(JNIEnv*, jclass) {
-  return 1;  // proof the library loaded; real count lives in the runtime
+  return 1;
 }
 
 JNIEXPORT void JNICALL
@@ -236,6 +378,11 @@ Java_com_bioshock1_recomp_NativeBridge_nativeSetControls(JNIEnv* env, jclass, jf
         case 1: state.buttons |= rex::hid::kPadB; break;
         case 2: state.buttons |= rex::hid::kPadX; break;
         case 3: state.buttons |= rex::hid::kPadY; break;
+        case 4: state.buttons |= rex::hid::kPadLeftShoulder; break;
+        case 5: state.buttons |= rex::hid::kPadRightShoulder; break;
+        case 6: state.left_trigger = 255; break;
+        case 7: state.right_trigger = 255; break;
+        case 8: state.buttons |= rex::hid::kPadBack; break;
         case 9: state.buttons |= rex::hid::kPadStart; break;
         default: break;
       }
@@ -256,13 +403,14 @@ Java_com_bioshock1_recomp_NativeBridge_nativeSetControls(JNIEnv* env, jclass, jf
   }
   {
     std::lock_guard<std::mutex> lock(g_touch_mutex);
+    g_touch_latched_buttons |= (state.buttons & ~g_touch_pad.buttons);
     g_touch_pad = state;
   }
 }
 
 JNIEXPORT jint JNICALL
 Java_com_bioshock1_recomp_NativeBridge_nativeSubmitCmds(JNIEnv*, jclass, jbyteArray) {
-  return 0;  // commands now flow through the real GPU plugin
+  return 0;
 }
 
 }  // extern "C"
