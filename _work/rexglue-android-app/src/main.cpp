@@ -188,6 +188,7 @@ int InitRuntime(const std::string& root, const std::string& driverMode,
     args.push_back("--gpu.custom.anisotropy=2");
     args.push_back("--gpu.custom.letterbox=true");
     args.push_back("--gpu.custom.vsync=true");
+    args.push_back("--apu.max_queued_frames=32");
   } else {
     args.push_back("--gpu.resolution_scale_x=" + std::to_string(scale));
     args.push_back("--gpu.resolution_scale_y=" + std::to_string(scale));
