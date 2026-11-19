@@ -383,10 +383,11 @@ void Gles3Shaders::PrewarmCache() {
   for (const auto& entry : std::filesystem::directory_iterator(cacheDir_, ec)) {
     if (!entry.is_regular_file()) continue;
     const std::string name = entry.path().filename().string();
-    if (name.size() < 4 || name.compare(name.size() - 4, 4, ".bin") != 0) continue;
+    if (name.size() < 8 || name.compare(name.size() - 8, 8, ".glesbin") != 0) continue;
     unsigned long long vsH = 0, psH = 0;
     unsigned int rFlag = 0, aFlag = 0;
-    if (std::sscanf(name.c_str(), "%016llx_%016llx_%1u%1u.bin", &vsH, &psH, &rFlag, &aFlag) != 4) {
+    if (std::sscanf(name.c_str(), "%016llx_%016llx_%u_%u.glesbin", &vsH, &psH, &rFlag, &aFlag) !=
+        4) {
       continue;
     }
     const uint64_t vsHash = static_cast<uint64_t>(vsH);
