@@ -12,8 +12,8 @@ android {
         applicationId "com.bioshock1.recomp"
         minSdk 28
         targetSdk 34
-        versionCode 4
-        versionName "0.0.4.20-experimental"
+        versionCode 5
+        versionName "0.0.5-experimental"
 
         ndk {
             abiFilters 'arm64-v8a'

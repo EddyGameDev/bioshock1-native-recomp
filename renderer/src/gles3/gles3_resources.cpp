@@ -1132,14 +1132,16 @@ GLuint Gles3Resources::TextureFor(const uint32_t words[6], uint32_t& widthOut, u
   if (it != textures_.end()) {
     GuestTexture& t = it->second;
     t.lastFrame = frame_;
-    // Uncompressed textures (e.g. Bink video Y/Cr/Cb planes, dynamic UI) and recently mutated
-    // textures must be checked every frame so 30fps videos never freeze or desync at 90-120 FPS.
-    // Static compressed 3D world textures (DXT/BC) throttle after 16 consecutive unchanged frames.
-    const bool isDynamic = !t.compressed || (frame_ <= t.dynamicUntilFrame);
+    // Textures that changed recently (Bink video planes, dynamic UI) are re-verified every frame
+    // so 30fps videos never freeze at 90-120 FPS. Once stable for 16 frames, uncompressed
+    // textures are re-verified every 3 frames and static compressed DXT/BC world textures every
+    // 30 frames, which removes thousands of hash reads per second in heavy scenes.
+    const bool isDynamic = frame_ <= t.dynamicUntilFrame;
+    const uint64_t stableInterval = t.compressed ? 30u : 3u;
     const bool needCheck =
         t.byteSize > 0 &&
         (isDynamic || t.stableCount < 16u ? (t.lastCheckedFrame != frame_)
-                                          : (frame_ >= t.lastCheckedFrame + 30u));
+                                          : (frame_ >= t.lastCheckedFrame + stableInterval));
     if (needCheck) {
       t.lastCheckedFrame = frame_;
       if (const uint8_t* ptr = PhysicalPtr(t.address, t.byteSize)) {
@@ -1149,6 +1151,8 @@ GLuint Gles3Resources::TextureFor(const uint32_t words[6], uint32_t& widthOut, u
           t.dynamicUntilFrame = frame_ + 300u;
           UploadTextureData(t, words);
         } else if (!isDynamic && t.stableCount < 16u) {
+          ++t.stableCount;
+        } else if (isDynamic && t.stableCount < 16u) {
           ++t.stableCount;
         }
       }

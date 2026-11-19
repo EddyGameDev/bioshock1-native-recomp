@@ -84,6 +84,8 @@ class MainActivity : Activity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        // Avoid thermal clock ramp-down during long sessions on devices that support it.
+        try { window.setSustainedPerformanceMode(true) } catch (_: Throwable) {}
         org.libsdl.app.SDLActivity.setContext(this)
         setContentView(R.layout.activity_main)
         applyImmersiveFullscreen()
@@ -100,8 +102,8 @@ class MainActivity : Activity() {
         container = findViewById(R.id.surfaceContainer)
 
         driverMode = prefs.getString("driver_mode", "custom") ?: "custom"
-        internalRes = prefs.getString("internal_res", "720p") ?: "720p"
-        if (internalRes !in resPresets) internalRes = "720p"
+        internalRes = prefs.getString("internal_res", "540p") ?: "540p"
+        if (internalRes !in resPresets) internalRes = "540p"
         vkScale = prefs.getInt("res_scale", 1).coerceIn(1, 2)
         upscaleMode = prefs.getString("upscale_mode", "lanczos") ?: "lanczos"
         fxaaEnabled = prefs.getBoolean("fxaa", true)

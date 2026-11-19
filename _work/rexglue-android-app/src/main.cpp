@@ -185,7 +185,7 @@ int InitRuntime(const std::string& root, const std::string& driverMode,
   if (driver == "custom") {
     args.push_back("--gpu.custom.internal_resolution=" + resPreset);
     args.push_back("--gpu.custom.present_filter=" + upscale);
-    args.push_back("--gpu.custom.anisotropy=4");
+    args.push_back("--gpu.custom.anisotropy=2");
     args.push_back("--gpu.custom.letterbox=true");
     args.push_back("--gpu.custom.vsync=false");
   } else {
