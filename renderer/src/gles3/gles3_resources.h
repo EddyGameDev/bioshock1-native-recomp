@@ -137,12 +137,14 @@ class Gles3Resources {
   GLuint WhiteTexture2D() const { return whiteTex2D_; }
   GLuint WhiteTextureCube() const { return whiteTexCube_; }
   GLuint LinearClampSampler() const { return linearClampSampler_; }
+  GLuint NearestClampSampler() const { return nearestClampSampler_; }
   GLuint GammaTexture() const { return gammaTex_; }
   void UpdateGammaLut(const uint32_t table[256], uint64_t version);
   bool HasGammaLut() const { return gammaValid_; }
 
   bool HasS3tc() const { return hasS3tc_; }
   bool HasRgtc() const { return hasRgtc_; }
+  bool HasFloatLinear() const { return hasFloatLinear_; }
 
  private:
   void DestroyScaledTargets();
@@ -164,6 +166,7 @@ class Gles3Resources {
   bool hasNorm16_ = false;
   bool hasBorderClamp_ = false;
   bool hasMirrorClamp_ = false;
+  bool hasFloatLinear_ = false;
 
   uint64_t frame_ = 0;
   std::unordered_map<uint64_t, uint32_t> classRows_;
@@ -183,6 +186,7 @@ class Gles3Resources {
   GLuint whiteTex2D_ = 0;
   GLuint whiteTexCube_ = 0;
   GLuint linearClampSampler_ = 0;
+  GLuint nearestClampSampler_ = 0;
   GLuint gammaTex_ = 0;
   uint64_t gammaVersion_ = 0;
   bool gammaValid_ = false;

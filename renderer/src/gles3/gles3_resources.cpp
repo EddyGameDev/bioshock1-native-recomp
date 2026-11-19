@@ -489,6 +489,7 @@ void Gles3Resources::Initialize(rex::IPhysicalMemory* memory, rex::IPhysicalWrit
   hasNorm16_ = HasExtension(exts, "GL_EXT_texture_norm16");
   hasBorderClamp_ = HasExtension(exts, "GL_EXT_texture_border_clamp");
   hasMirrorClamp_ = HasExtension(exts, "GL_EXT_texture_mirror_clamp_to_edge");
+  hasFloatLinear_ = HasExtension(exts, "GL_OES_texture_float_linear");
   if (HasExtension(exts, "GL_EXT_texture_filter_anisotropic")) {
     glGetFloatv(kGlMaxTextureMaxAnisotropy, &maxDeviceAniso_);
   } else {
@@ -517,6 +518,12 @@ void Gles3Resources::Initialize(rex::IPhysicalMemory* memory, rex::IPhysicalWrit
   glSamplerParameteri(linearClampSampler_, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
   glSamplerParameteri(linearClampSampler_, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
   glSamplerParameteri(linearClampSampler_, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+
+  glGenSamplers(1, &nearestClampSampler_);
+  glSamplerParameteri(nearestClampSampler_, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+  glSamplerParameteri(nearestClampSampler_, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+  glSamplerParameteri(nearestClampSampler_, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+  glSamplerParameteri(nearestClampSampler_, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
 
   glGenTextures(1, &gammaTex_);
   glBindTexture(GL_TEXTURE_2D, gammaTex_);
@@ -595,6 +602,7 @@ void Gles3Resources::Shutdown() {
   if (whiteTex2D_) { glDeleteTextures(1, &whiteTex2D_); whiteTex2D_ = 0; }
   if (whiteTexCube_) { glDeleteTextures(1, &whiteTexCube_); whiteTexCube_ = 0; }
   if (linearClampSampler_) { glDeleteSamplers(1, &linearClampSampler_); linearClampSampler_ = 0; }
+  if (nearestClampSampler_) { glDeleteSamplers(1, &nearestClampSampler_); nearestClampSampler_ = 0; }
   if (gammaTex_) { glDeleteTextures(1, &gammaTex_); gammaTex_ = 0; }
   for (int i = 0; i < 2; ++i) {
     if (vbHalfFence_[i]) { glDeleteSync(vbHalfFence_[i]); vbHalfFence_[i] = nullptr; }

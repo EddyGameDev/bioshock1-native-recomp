@@ -899,7 +899,9 @@ bool Gles3Backend::ExecuteDraw(const uint32_t* regs, uint32_t initiator, uint32_
       if (target == GL_TEXTURE_CUBE_MAP && !isCube) tex = resources_.WhiteTextureCube();
       if (target == GL_TEXTURE_2D && isCube) tex = resources_.WhiteTexture2D();
 
-      const GLuint smp = resources_.SamplerFor(words);
+      const GLuint smp = (rSurf && rSurf->isDepth && !resources_.HasFloatLinear())
+                             ? resources_.NearestClampSampler()
+                             : resources_.SamplerFor(words);
       if (boundTex_[fetch.binding] != tex || boundTexTarget_[fetch.binding] != target) {
         glActiveTexture(GL_TEXTURE0 + fetch.binding);
         glBindTexture(target, tex);
@@ -1485,12 +1487,16 @@ bool Gles3Backend::ExecuteResolve(const uint32_t* regs) {
           pp.params[3] = fromDepth ? 1.0f : 0.0f;
           UploadUboPresent(pp);
 
+          // GL_DEPTH24_STENCIL8 is NOT linear-filterable in GLES 3.2 (binding GL_LINEAR makes it
+          // incomplete -> returns 0.0 for all shadow/depth resolves!). Always use NEAREST for depth.
+          const GLuint resolveSmp =
+              fromDepth ? resources_.NearestClampSampler() : resources_.LinearClampSampler();
           glActiveTexture(GL_TEXTURE0);
           glBindTexture(GL_TEXTURE_2D, srcTex);
-          glBindSampler(0, resources_.LinearClampSampler());
+          glBindSampler(0, resolveSmp);
           boundTex_[0] = srcTex;
           boundTexTarget_[0] = GL_TEXTURE_2D;
-          boundSampler_[0] = resources_.LinearClampSampler();
+          boundSampler_[0] = resolveSmp;
 
           glUseProgram(shaders_.ResolveCopyProgram());
           glBindVertexArray(emptyVao_);
