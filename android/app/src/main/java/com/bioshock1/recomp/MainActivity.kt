@@ -84,8 +84,6 @@ class MainActivity : Activity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
-        // Avoid thermal clock ramp-down during long sessions on devices that support it.
-        try { window.setSustainedPerformanceMode(true) } catch (_: Throwable) {}
         org.libsdl.app.SDLActivity.setContext(this)
         setContentView(R.layout.activity_main)
         applyImmersiveFullscreen()

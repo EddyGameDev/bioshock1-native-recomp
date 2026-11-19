@@ -2,7 +2,9 @@
 
 #include <GLES3/gl32.h>
 
+#include <atomic>
 #include <cstdint>
+#include <memory>
 #include <unordered_map>
 #include <vector>
 
@@ -15,7 +17,7 @@ namespace bs1::renderer::gles3 {
  * SSBO vertex buffers, index buffers, samplers, and gamma LUT with live
  * zero-restart internal resolution scaling.
  */
-class Gles3Resources {
+class Gles3Resources final : public rex::IPhysicalWriteListener {
  public:
   using Handle = uint32_t;
 
@@ -69,7 +71,10 @@ class Gles3Resources {
     uint64_t lastCheckedFrame = 0;
     uint64_t dynamicUntilFrame = 0;
     uint32_t stableCount = 0;
+    uint32_t uploadSeq = 0;
+    uint32_t rewriteStreak = 0;
     bool compressed = false;
+    bool watchArmed = false;
     uint64_t watchToken = 0;
   };
 
@@ -83,6 +88,9 @@ class Gles3Resources {
     uint64_t lastCheckedFrame = 0;
     uint64_t volatileUntilFrame = 0;
     uint32_t stableCount = 0;
+    uint32_t uploadSeq = 0;
+    uint32_t rewriteStreak = 0;
+    bool watchArmed = false;
     uint64_t watchToken = 0;
   };
 
@@ -94,7 +102,11 @@ class Gles3Resources {
     uint64_t fingerprint = 0;
     uint64_t lastFrame = 0;
     uint64_t lastCheckedFrame = 0;
+    uint64_t volatileUntilFrame = 0;
     uint32_t stableCount = 0;
+    uint32_t uploadSeq = 0;
+    uint32_t rewriteStreak = 0;
+    bool watchArmed = false;
   };
 
   void Initialize(rex::IPhysicalMemory* memory, rex::IPhysicalWriteWatch* watch);
@@ -147,13 +159,30 @@ class Gles3Resources {
   bool HasFloatLinear() const { return hasFloatLinear_; }
 
  private:
+  rex::PhysicalRange OnPhysicalWrite(rex::PhysicalRange range, bool exact) override;
+  bool RangeDirtiedSince(uint32_t start, uint32_t end, uint32_t afterSeq) const;
+  bool NeedsRefresh(uint32_t physStart, uint32_t physEnd, uint32_t& uploadSeq,
+                    uint64_t prevUsedFrame, uint64_t volatileUntilFrame, bool& watchArmed,
+                    bool& watchHitOut) const;
+  void FinishRefresh(uint32_t addr, uint32_t size, bool changed, bool watchHit,
+                     uint64_t prevUsedFrame, uint32_t& rewriteStreak,
+                     uint64_t& volatileUntilFrame, bool& watchArmed);
+  void ArmWatch(uint32_t start, uint32_t size);
+
   void DestroyScaledTargets();
   void UploadTextureData(GuestTexture& tex, const uint32_t words[6]);
   uint32_t RowsForClass(uint32_t pitch, uint32_t cls) const;
   static GLenum GlColorFormat(uint32_t xenosFmt, uint32_t& bytesPerSample);
 
+  static constexpr uint32_t kPhysPages = (512u << 20) >> 12;
+  static constexpr uint32_t kPhysChunks = (512u << 20) >> 16;
+
   rex::IPhysicalMemory* memory_ = nullptr;
   rex::IPhysicalWriteWatch* watch_ = nullptr;
+  rex::ScopeGuard watchGuard_;
+  std::unique_ptr<std::atomic<uint32_t>[]> pageSeq_;
+  std::unique_ptr<std::atomic<uint32_t>[]> chunkSeq_;
+  std::atomic<uint32_t> writeSeq_{1};
   const uint8_t* physBase_ = nullptr;
   size_t physSize_ = 0;
 

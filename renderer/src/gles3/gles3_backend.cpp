@@ -1656,10 +1656,6 @@ void Gles3Backend::ExecutePresent(uint32_t fbAddr, uint32_t fbWidth, uint32_t fb
   glDisable(GL_CULL_FACE);
   glDisablei(GL_BLEND, 0);
   glColorMaski(0, GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
-  glViewport(0, 0, winW, winH);
-  glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
-  glClear(GL_COLOR_BUFFER_BIT);
-
   // Compute aspect-preserving letterbox viewport
   GLint vpX = 0, vpY = 0, vpW = winW, vpH = winH;
   if (letterbox) {
@@ -1674,6 +1670,11 @@ void Gles3Backend::ExecutePresent(uint32_t fbAddr, uint32_t fbWidth, uint32_t fb
       vpH = std::max<GLint>(1, static_cast<GLint>(std::lround(winW / srcAspect)));
       vpY = (winH - vpH) / 2;
     }
+  }
+  if (vpX > 0 || vpY > 0 || vpW < winW || vpH < winH) {
+    glViewport(0, 0, winW, winH);
+    glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
+    glClear(GL_COLOR_BUFFER_BIT);
   }
   glViewport(vpX, vpY, vpW, vpH);
 

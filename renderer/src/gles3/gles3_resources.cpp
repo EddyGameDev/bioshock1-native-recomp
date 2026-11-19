@@ -503,6 +503,12 @@ void Gles3Resources::Initialize(rex::IPhysicalMemory* memory, rex::IPhysicalWrit
       physSize_ = span->size();
     }
   }
+  pageSeq_ = std::make_unique<std::atomic<uint32_t>[]>(kPhysPages);
+  chunkSeq_ = std::make_unique<std::atomic<uint32_t>[]>(kPhysChunks);
+  writeSeq_.store(1u, std::memory_order_release);
+  if (watch_) {
+    watchGuard_ = watch_->AddWriteListener(*this);
+  }
 
   const char* exts = reinterpret_cast<const char*>(glGetString(GL_EXTENSIONS));
   hasS3tc_ = HasExtension(exts, "GL_EXT_texture_compression_s3tc");
@@ -642,10 +648,103 @@ void Gles3Resources::Shutdown() {
   vbHalf_ = 0;
   gammaValid_ = false;
   gammaVersion_ = 0;
+  watchGuard_ = rex::ScopeGuard();
+  pageSeq_.reset();
+  chunkSeq_.reset();
   memory_ = nullptr;
   watch_ = nullptr;
   physBase_ = nullptr;
   physSize_ = 0;
+}
+
+rex::PhysicalRange Gles3Resources::OnPhysicalWrite(rex::PhysicalRange range, bool /*exact*/) {
+  const uint32_t seq = writeSeq_.fetch_add(1u, std::memory_order_acq_rel) + 1u;
+  if (pageSeq_ && chunkSeq_ && range.length > 0 && range.address < (512u << 20)) {
+    const uint32_t start = range.address;
+    const uint32_t end =
+        std::min<uint32_t>(start + std::min<uint32_t>(range.length, (512u << 20) - start),
+                           512u << 20);
+    if (end > start) {
+      const uint32_t p0 = start >> 12;
+      const uint32_t p1 = (end - 1u) >> 12;
+      for (uint32_t p = p0; p <= p1 && p < kPhysPages; ++p) {
+        uint32_t prev = pageSeq_[p].load(std::memory_order_relaxed);
+        while (seq > prev && !pageSeq_[p].compare_exchange_weak(prev, seq, std::memory_order_release,
+                                                                 std::memory_order_relaxed)) {
+        }
+      }
+      const uint32_t c0 = start >> 16;
+      const uint32_t c1 = (end - 1u) >> 16;
+      for (uint32_t c = c0; c <= c1 && c < kPhysChunks; ++c) {
+        uint32_t prev = chunkSeq_[c].load(std::memory_order_relaxed);
+        while (seq > prev && !chunkSeq_[c].compare_exchange_weak(prev, seq, std::memory_order_release,
+                                                                 std::memory_order_relaxed)) {
+        }
+      }
+    }
+  }
+  return range;
+}
+
+bool Gles3Resources::RangeDirtiedSince(uint32_t start, uint32_t end, uint32_t afterSeq) const {
+  if (!pageSeq_ || !chunkSeq_ || end <= start || start >= (512u << 20)) return false;
+  const uint32_t clampedEnd = std::min<uint32_t>(end, 512u << 20);
+  const uint32_t c0 = start >> 16;
+  const uint32_t c1 = (clampedEnd - 1u) >> 16;
+  for (uint32_t c = c0; c <= c1; ++c) {
+    if (chunkSeq_[c].load(std::memory_order_acquire) <= afterSeq) continue;
+    const uint32_t p0 = std::max(start, c << 16) >> 12;
+    const uint32_t p1 = (std::min(clampedEnd, (c + 1u) << 16) - 1u) >> 12;
+    for (uint32_t p = p0; p <= p1; ++p) {
+      if (pageSeq_[p].load(std::memory_order_acquire) > afterSeq) return true;
+    }
+  }
+  return false;
+}
+
+bool Gles3Resources::NeedsRefresh(uint32_t physStart, uint32_t physEnd, uint32_t& uploadSeq,
+                                  uint64_t prevUsedFrame, uint64_t volatileUntilFrame,
+                                  bool& watchArmed, bool& watchHitOut) const {
+  const uint32_t curSeq = writeSeq_.load(std::memory_order_acquire);
+  watchHitOut = (uploadSeq != curSeq) && RangeDirtiedSince(physStart, physEnd, uploadSeq);
+  if (watchHitOut) {
+    watchArmed = false;
+    uploadSeq = curSeq;
+    return true;
+  }
+  uploadSeq = curSeq;
+  if (!watchArmed) {
+    return prevUsedFrame != frame_;
+  }
+  (void)volatileUntilFrame;
+  return false;
+}
+
+void Gles3Resources::FinishRefresh(uint32_t addr, uint32_t size, bool changed, bool watchHit,
+                                   uint64_t prevUsedFrame, uint32_t& rewriteStreak,
+                                   uint64_t& volatileUntilFrame, bool& watchArmed) {
+  if (!changed) {
+    if (watchHit || (!watchArmed && frame_ >= volatileUntilFrame && prevUsedFrame != frame_)) {
+      rewriteStreak = 0;
+      ArmWatch(addr, size);
+      watchArmed = true;
+    }
+    return;
+  }
+  if (rewriteStreak < 100u) ++rewriteStreak;
+  if (rewriteStreak >= 3u) {
+    volatileUntilFrame = frame_ + 60u;
+    watchArmed = false;
+  } else {
+    ArmWatch(addr, size);
+    watchArmed = true;
+  }
+}
+
+void Gles3Resources::ArmWatch(uint32_t start, uint32_t size) {
+  if (watch_ && size > 0) {
+    watch_->WatchPhysicalWrites({start & kPhysicalMask, size});
+  }
 }
 
 const uint8_t* Gles3Resources::PhysicalPtr(uint32_t physAddr, size_t size) const {
@@ -1131,28 +1230,37 @@ GLuint Gles3Resources::TextureFor(const uint32_t words[6], uint32_t& widthOut, u
   auto it = textures_.find(key);
   if (it != textures_.end()) {
     GuestTexture& t = it->second;
+    const uint64_t prevUsedFrame = t.lastFrame;
     t.lastFrame = frame_;
-    // Textures that changed recently (Bink video planes, dynamic UI) are re-verified every frame
-    // so 30fps videos never freeze at 90-120 FPS. Once stable for 16 frames, uncompressed
-    // textures are re-verified every 3 frames and static compressed DXT/BC world textures every
-    // 30 frames, which removes thousands of hash reads per second in heavy scenes.
-    const bool isDynamic = frame_ <= t.dynamicUntilFrame;
-    const uint64_t stableInterval = t.compressed ? 30u : 3u;
-    const bool needCheck =
-        t.byteSize > 0 &&
-        (isDynamic || t.stableCount < 16u ? (t.lastCheckedFrame != frame_)
-                                          : (frame_ >= t.lastCheckedFrame + stableInterval));
+    bool watchHit = false;
+    bool needCheck = false;
+    if (watch_) {
+      needCheck = t.byteSize > 0 &&
+                  NeedsRefresh(t.address, t.address + t.byteSize, t.uploadSeq, prevUsedFrame,
+                               t.dynamicUntilFrame, t.watchArmed, watchHit);
+    } else {
+      const bool isDynamic = frame_ <= t.dynamicUntilFrame;
+      const uint64_t stableInterval = t.compressed ? 30u : 3u;
+      needCheck = t.byteSize > 0 &&
+                  (isDynamic || t.stableCount < 16u ? (t.lastCheckedFrame != frame_)
+                                                    : (frame_ >= t.lastCheckedFrame + stableInterval));
+    }
     if (needCheck) {
       t.lastCheckedFrame = frame_;
       if (const uint8_t* ptr = PhysicalPtr(t.address, t.byteSize)) {
+        const uint32_t seqBeforeRead = writeSeq_.load(std::memory_order_acquire);
         const uint64_t fp = Fingerprint(ptr, t.byteSize);
-        if (fp != t.fingerprint) {
+        const bool changed = (fp != t.fingerprint);
+        if (watch_) {
+          FinishRefresh(t.address, t.byteSize, changed, watchHit, prevUsedFrame, t.rewriteStreak,
+                        t.dynamicUntilFrame, t.watchArmed);
+          t.uploadSeq = seqBeforeRead;
+        }
+        if (changed) {
           t.stableCount = 0;
-          t.dynamicUntilFrame = frame_ + 300u;
+          if (!watch_) t.dynamicUntilFrame = frame_ + 300u;
           UploadTextureData(t, words);
-        } else if (!isDynamic && t.stableCount < 16u) {
-          ++t.stableCount;
-        } else if (isDynamic && t.stableCount < 16u) {
+        } else if (!watch_ && t.stableCount < 16u) {
           ++t.stableCount;
         }
       }
@@ -1163,7 +1271,12 @@ GLuint Gles3Resources::TextureFor(const uint32_t words[6], uint32_t& widthOut, u
 
   GuestTexture& t = textures_[key];
   t.lastFrame = frame_;
+  t.uploadSeq = writeSeq_.load(std::memory_order_acquire);
   UploadTextureData(t, words);
+  if (watch_ && t.byteSize > 0) {
+    ArmWatch(t.address, t.byteSize);
+    t.watchArmed = true;
+  }
   return t.tex ? t.tex : (isCubeOut ? whiteTexCube_ : whiteTex2D_);
 }
 
@@ -1212,6 +1325,7 @@ GLuint Gles3Resources::VertexBufferFor(uint32_t address, uint32_t bytes, size_t&
   auto it = vertexBuffers_.find(key);
   if (it != vertexBuffers_.end()) {
     VertexBuffer& vb = it->second;
+    const uint64_t prevUsedFrame = vb.lastFrame;
     vb.lastFrame = frame_;
     const uint32_t wanted = std::max(size, vb.uploadedBytes);
     if (frame_ <= vb.volatileUntilFrame && size <= 65536u && vbRingPtr_) {
@@ -1223,8 +1337,13 @@ GLuint Gles3Resources::VertexBufferFor(uint32_t address, uint32_t bytes, size_t&
           static_cast<uint32_t>(std::min<size_t>(newCap, physSize_ - phys));
       vb.bytes = newCap;
       vb.uploadedBytes = wanted;
+      vb.uploadSeq = writeSeq_.load(std::memory_order_acquire);
       vb.fingerprint = Fingerprint(ptr, wanted);
       vb.lastCheckedFrame = frame_;
+      if (watch_) {
+        ArmWatch(phys, wanted);
+        vb.watchArmed = true;
+      }
       glBindBuffer(GL_SHADER_STORAGE_BUFFER, vb.ssbo);
       glBufferData(GL_SHADER_STORAGE_BUFFER, static_cast<GLsizeiptr>(newCap), nullptr,
                    GL_DYNAMIC_DRAW);
@@ -1232,20 +1351,34 @@ GLuint Gles3Resources::VertexBufferFor(uint32_t address, uint32_t bytes, size_t&
       glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0);
       return vb.ssbo;
     }
-    // Re-check immediately when growing or for recently mutated VBs.
-    // Static mesh VBs only re-verify every 16 frames to avoid CPU RAM reads.
-    const bool isVolatile = (frame_ <= vb.volatileUntilFrame);
-    const bool needCheck =
-        (wanted > vb.uploadedBytes) || isVolatile ||
-        (vb.stableCount < 16u ? (vb.lastCheckedFrame != frame_)
-                              : (frame_ >= vb.lastCheckedFrame + 16u));
+    bool watchHit = false;
+    bool needCheck = false;
+    if (watch_) {
+      needCheck = (wanted > vb.uploadedBytes) ||
+                  NeedsRefresh(phys, phys + wanted, vb.uploadSeq, prevUsedFrame,
+                               vb.volatileUntilFrame, vb.watchArmed, watchHit);
+    } else {
+      const bool isVolatile = (frame_ <= vb.volatileUntilFrame);
+      needCheck = (wanted > vb.uploadedBytes) || isVolatile ||
+                  (vb.stableCount < 16u ? (vb.lastCheckedFrame != frame_)
+                                        : (frame_ >= vb.lastCheckedFrame + 16u));
+    }
     if (needCheck) {
       vb.lastCheckedFrame = frame_;
+      const uint32_t seqBeforeRead = writeSeq_.load(std::memory_order_acquire);
       const uint64_t fp = Fingerprint(ptr, wanted);
-      if (wanted > vb.uploadedBytes || fp != vb.fingerprint) {
+      const bool changed = (wanted > vb.uploadedBytes) || (fp != vb.fingerprint);
+      if (watch_) {
+        FinishRefresh(phys, wanted, changed, watchHit, prevUsedFrame, vb.rewriteStreak,
+                      vb.volatileUntilFrame, vb.watchArmed);
+        vb.uploadSeq = seqBeforeRead;
+      }
+      if (changed) {
         if (fp != vb.fingerprint && wanted <= vb.uploadedBytes) {
-          vb.volatileUntilFrame = frame_ + 180u;
-          vb.stableCount = 0;
+          if (!watch_) {
+            vb.volatileUntilFrame = frame_ + 180u;
+            vb.stableCount = 0;
+          }
           if (size <= 65536u && vbRingPtr_) {
             return allocVbRing(ptr, size);
           }
@@ -1258,7 +1391,7 @@ GLuint Gles3Resources::VertexBufferFor(uint32_t address, uint32_t bytes, size_t&
                      GL_DYNAMIC_DRAW);
         glBufferSubData(GL_SHADER_STORAGE_BUFFER, 0, static_cast<GLsizeiptr>(wanted), ptr);
         glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0);
-      } else if (vb.stableCount < 16u) {
+      } else if (!watch_ && vb.stableCount < 16u) {
         ++vb.stableCount;
       }
     }
@@ -1285,9 +1418,14 @@ GLuint Gles3Resources::VertexBufferFor(uint32_t address, uint32_t bytes, size_t&
   vb.address = phys;
   vb.bytes = allocCap;
   vb.uploadedBytes = size;
+  vb.uploadSeq = writeSeq_.load(std::memory_order_acquire);
   vb.fingerprint = Fingerprint(ptr, size);
   vb.lastFrame = frame_;
   vb.lastCheckedFrame = frame_;
+  if (watch_) {
+    ArmWatch(phys, size);
+    vb.watchArmed = true;
+  }
   glGenBuffers(1, &vb.ssbo);
   glBindBuffer(GL_SHADER_STORAGE_BUFFER, vb.ssbo);
   glBufferData(GL_SHADER_STORAGE_BUFFER, static_cast<GLsizeiptr>(allocCap), nullptr,
@@ -1314,12 +1452,28 @@ GLuint Gles3Resources::StaticIndexBufferFor(uint32_t address, uint32_t count, bo
   auto it = indexBuffers_.find(key);
   if (it != indexBuffers_.end()) {
     StaticIndexBuffer& ib = it->second;
+    const uint64_t prevUsedFrame = ib.lastFrame;
     ib.lastFrame = frame_;
     if (ib.ebo) {
-      if (frame_ >= ib.lastCheckedFrame + 16u) {
+      bool watchHit = false;
+      bool needCheck = false;
+      if (watch_) {
+        needCheck = NeedsRefresh(phys, phys + rawBytes, ib.uploadSeq, prevUsedFrame,
+                                 ib.volatileUntilFrame, ib.watchArmed, watchHit);
+      } else {
+        needCheck = (frame_ >= ib.lastCheckedFrame + 16u);
+      }
+      if (needCheck) {
         ib.lastCheckedFrame = frame_;
+        const uint32_t seqBeforeRead = writeSeq_.load(std::memory_order_acquire);
         const uint64_t fp = Fingerprint(ptr, rawBytes);
-        if (fp != ib.fingerprint) {
+        const bool changed = (fp != ib.fingerprint);
+        if (watch_) {
+          FinishRefresh(phys, rawBytes, changed, watchHit, prevUsedFrame, ib.rewriteStreak,
+                        ib.volatileUntilFrame, ib.watchArmed);
+          ib.uploadSeq = seqBeforeRead;
+        }
+        if (changed) {
           glDeleteBuffers(1, &ib.ebo);
           ib.ebo = 0;
           ib.fingerprint = fp;
@@ -1359,6 +1513,11 @@ GLuint Gles3Resources::StaticIndexBufferFor(uint32_t address, uint32_t count, bo
       glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, ib.ebo);
       glBufferData(GL_ELEMENT_ARRAY_BUFFER, static_cast<GLsizeiptr>(count) * 4,
                    idxScratch_.data(), GL_STATIC_DRAW);
+      ib.uploadSeq = writeSeq_.load(std::memory_order_acquire);
+      if (watch_) {
+        ArmWatch(phys, rawBytes);
+        ib.watchArmed = true;
+      }
       return ib.ebo;
     }
     return 0;
