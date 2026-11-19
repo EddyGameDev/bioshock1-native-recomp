@@ -1,5 +1,9 @@
 # BioShock 1 — Native ReComp (Windows + Android)
 
+[![Join the Discord](https://img.shields.io/badge/Discord-Join%20Community%20%26%20Feedback-5865F2?style=for-the-badge&logo=discord&logoColor=white)](https://discord.gg/aaDRJQNw8T)
+
+> **Community & Testing Feedback:** Join the Discord server to report bugs, share device performance, and follow progress: **https://discord.gg/aaDRJQNw8T**
+
 > **Release `v0.0.1-experimental`** — the genuine BioShock 1 title screen renders
 > on Android through a **static recompilation** pipeline and the **real ReXGlue
 > runtime**, presented by the guest `VdSwap` path. This is an **experimental
