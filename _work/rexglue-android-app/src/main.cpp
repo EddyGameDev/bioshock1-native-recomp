@@ -384,6 +384,12 @@ Java_com_bioshock1_recomp_NativeBridge_nativeSetControls(JNIEnv* env, jclass, jf
         case 7: state.right_trigger = 255; break;
         case 8: state.buttons |= rex::hid::kPadBack; break;
         case 9: state.buttons |= rex::hid::kPadStart; break;
+        case 10: state.buttons |= rex::hid::kPadLeftThumb; break;
+        case 11: state.buttons |= rex::hid::kPadRightThumb; break;
+        case 12: state.buttons |= rex::hid::kPadDPadUp; break;
+        case 13: state.buttons |= rex::hid::kPadDPadDown; break;
+        case 14: state.buttons |= rex::hid::kPadDPadLeft; break;
+        case 15: state.buttons |= rex::hid::kPadDPadRight; break;
         default: break;
       }
     }
