@@ -55,6 +55,7 @@ class Gles3Resources final : public rex::IPhysicalWriteListener {
     uint32_t base = 0;
     bool isDepth = false;
     bool rbSwapped = false;
+    uint32_t lastWriteSeq = 0;
     uint64_t lastFrame = 0;
   };
 
@@ -131,6 +132,7 @@ class Gles3Resources final : public rex::IPhysicalWriteListener {
   Resolved* ResolvedFor(uint32_t base, uint32_t width, uint32_t height, GLenum internalFormat,
                         bool isDepth);
   const Resolved* ResolvedAt(uint32_t base) const;
+  uint32_t CurrentWriteSeq() const { return writeSeq_.load(std::memory_order_acquire); }
   const Resolved* LastFrontbuffer() const { return lastFrontbuffer_; }
   void SetLastFrontbuffer(const Resolved* r) { lastFrontbuffer_ = r; }
 

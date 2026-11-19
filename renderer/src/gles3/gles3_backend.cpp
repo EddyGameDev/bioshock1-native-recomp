@@ -599,7 +599,7 @@ bool Gles3Backend::ExecuteDraw(const uint32_t* regs, uint32_t initiator, uint32_
   Gles3Shaders::Handle psH = shaders_.Current(true);
   const Gles3Shaders::Stage* vs = shaders_.GetStage(vsH);
   const Gles3Shaders::Stage* ps = shaders_.GetStage(psH);
-  if (!vs || !vs->shader || !ps || !ps->shader) return false;
+  if (!vs || vs->failed || !ps || ps->failed) return false;
 
   const uint32_t colorMask = regs[kRegColorMask];
   const uint32_t colorControl = regs[kRegColorControl];
@@ -1423,6 +1423,7 @@ bool Gles3Backend::ExecuteResolve(const uint32_t* regs) {
         dst->guestWidth = width;
         dst->guestHeight = height;
         dst->rbSwapped = !fromDepth && (((destInfo >> 24) & 1u) != 0);
+        dst->lastWriteSeq = resources_.CurrentWriteSeq();
         if (!fromDepth && width >= 480 && height >= 240) {
           resources_.SetLastFrontbuffer(dst);
         }

@@ -256,12 +256,17 @@ void Gles3Shaders::Initialize(const std::filesystem::path& cacheDir) {
   presentLanczosProg_ = LinkBuiltin(kPresentVsSource, kPresentLanczosFsSource, "presentLanczos");
   presentBilinearProg_ = LinkBuiltin(kPresentVsSource, kPresentBilinearFsSource, "presentBilinear");
   resolveCopyProg_ = LinkBuiltin(kResolveVsSource, kResolveCopyFsSource, "resolveCopy");
+  PrewarmCache();
 
-  GLESLOG("Gles3Shaders initialized (binaryFormats=%d, rectGS=%u, lanczos=%u, resolve=%u)",
-          numFormats, rectGs_, presentLanczosProg_, resolveCopyProg_);
+  GLESLOG("Gles3Shaders initialized (binaryFormats=%d, prewarmed=%zu, rectGS=%u, lanczos=%u, resolve=%u)",
+          numFormats, prewarmed_.size(), rectGs_, presentLanczosProg_, resolveCopyProg_);
 }
 
 void Gles3Shaders::Shutdown() {
+  for (auto& [k, prog] : prewarmed_) {
+    if (prog) glDeleteProgram(prog);
+  }
+  prewarmed_.clear();
   for (auto& [k, prog] : programs_) {
     if (prog) glDeleteProgram(prog);
   }
@@ -353,17 +358,47 @@ Gles3Shaders::Handle Gles3Shaders::Intern(const uint32_t* words, uint32_t count,
   stage.colourTargets = tr.colourTargets;
   stage.writesDepth = tr.writesDepth;
   stage.usesKill = tr.usesKill;
+  stage.glslSource = std::move(tr.glsl);
+  return h;
+}
 
+bool Gles3Shaders::EnsureStageCompiled(Stage& stage) {
+  if (stage.shader) return true;
+  if (stage.failed || stage.glslSource.empty()) return false;
   char label[64];
-  std::snprintf(label, sizeof(label), "%s_%016llx", pixel ? "PS" : "VS",
-                static_cast<unsigned long long>(hash));
-  stage.shader = CompileShader(pixel ? GL_FRAGMENT_SHADER : GL_VERTEX_SHADER, tr.glsl, label);
+  std::snprintf(label, sizeof(label), "%s_%016llx", stage.pixel ? "PS" : "VS",
+                static_cast<unsigned long long>(stage.hash));
+  stage.shader =
+      CompileShader(stage.pixel ? GL_FRAGMENT_SHADER : GL_VERTEX_SHADER, stage.glslSource, label);
   if (!stage.shader) {
     stage.failed = true;
-  } else if (pixel) {
-    stage.glslSource = std::move(tr.glsl);
+    return false;
   }
-  return h;
+  return true;
+}
+
+void Gles3Shaders::PrewarmCache() {
+  if (!hasBinaryFormats_ || cacheDir_.empty()) return;
+  std::error_code ec;
+  for (const auto& entry : std::filesystem::directory_iterator(cacheDir_, ec)) {
+    if (!entry.is_regular_file()) continue;
+    const std::string name = entry.path().filename().string();
+    if (name.size() < 4 || name.compare(name.size() - 4, 4, ".bin") != 0) continue;
+    unsigned long long vsH = 0, psH = 0;
+    unsigned int rFlag = 0, aFlag = 0;
+    if (std::sscanf(name.c_str(), "%016llx_%016llx_%1u%1u.bin", &vsH, &psH, &rFlag, &aFlag) != 4) {
+      continue;
+    }
+    const uint64_t vsHash = static_cast<uint64_t>(vsH);
+    const uint64_t psHash = static_cast<uint64_t>(psH);
+    const bool rect = (rFlag != 0);
+    const bool alpha = (aFlag != 0);
+    HashProgramKey hk{vsHash, psHash, rect, alpha};
+    if (prewarmed_.find(hk) != prewarmed_.end()) continue;
+    if (GLuint prog = TryLoadProgramBinary(vsHash, psHash, rect, alpha)) {
+      prewarmed_[hk] = prog;
+    }
+  }
 }
 
 const Gles3Shaders::Stage* Gles3Shaders::GetStage(Handle h) const {
@@ -443,10 +478,11 @@ void Gles3Shaders::SaveProgramBinary(GLuint prog, uint64_t vsHash, uint64_t psHa
 
 GLuint Gles3Shaders::GetLinkedProgram(Handle vsHandle, Handle psHandle, bool rectangles,
                                       bool alphaTest) {
-  const Stage* vs = GetStage(vsHandle);
-  if (!vs || !vs->shader) return 0;
+  if (vsHandle == 0 || vsHandle >= stages_.size()) return 0;
+  Stage& vs = stages_[vsHandle];
+  if (vs.failed) return 0;
   Stage* ps = (psHandle != 0 && psHandle < stages_.size()) ? &stages_[psHandle] : nullptr;
-  if (psHandle && (!ps || !ps->shader)) return 0;
+  if (psHandle && (!ps || ps->failed)) return 0;
   const bool useAlpha = (ps != nullptr) && alphaTest;
 
   ProgramKey key{vsHandle, psHandle, rectangles, useAlpha};
@@ -455,13 +491,28 @@ GLuint Gles3Shaders::GetLinkedProgram(Handle vsHandle, Handle psHandle, bool rec
   }
 
   const uint64_t psHash = ps ? ps->hash : 0ULL;
-  if (GLuint cached = TryLoadProgramBinary(vs->hash, psHash, rectangles, useAlpha)) {
+  HashProgramKey hk{vs.hash, psHash, rectangles, useAlpha};
+  if (auto pit = prewarmed_.find(hk); pit != prewarmed_.end()) {
+    const GLuint prog = pit->second;
+    prewarmed_.erase(pit);
+    programs_[key] = prog;
+    return prog;
+  }
+  if (GLuint cached = TryLoadProgramBinary(vs.hash, psHash, rectangles, useAlpha)) {
     programs_[key] = cached;
     return cached;
   }
 
+  if (!EnsureStageCompiled(vs)) {
+    programs_[key] = 0;
+    return 0;
+  }
   GLuint fsObj = nullFs_;
   if (ps) {
+    if (!EnsureStageCompiled(*ps)) {
+      programs_[key] = 0;
+      return 0;
+    }
     if (useAlpha) {
       if (!ps->shaderAlphaTest && !ps->glslSource.empty()) {
         std::string src = ps->glslSource;
@@ -484,7 +535,7 @@ GLuint Gles3Shaders::GetLinkedProgram(Handle vsHandle, Handle psHandle, bool rec
   if (hasBinaryFormats_) {
     glProgramParameteri(prog, GL_PROGRAM_BINARY_RETRIEVABLE_HINT, GL_TRUE);
   }
-  glAttachShader(prog, vs->shader);
+  glAttachShader(prog, vs.shader);
   if (rectangles && rectGs_) {
     glAttachShader(prog, rectGs_);
   }
@@ -496,14 +547,14 @@ GLuint Gles3Shaders::GetLinkedProgram(Handle vsHandle, Handle psHandle, bool rec
     char log[2048] = {};
     glGetProgramInfoLog(prog, sizeof(log) - 1, nullptr, log);
     GLESERR("LinkProgram(vs=%016llx ps=%016llx rect=%d at=%d) failed: %s",
-            static_cast<unsigned long long>(vs->hash), static_cast<unsigned long long>(psHash),
+            static_cast<unsigned long long>(vs.hash), static_cast<unsigned long long>(psHash),
             rectangles ? 1 : 0, useAlpha ? 1 : 0, log);
     glDeleteProgram(prog);
     programs_[key] = 0;
     return 0;
   }
 
-  SaveProgramBinary(prog, vs->hash, psHash, rectangles, useAlpha);
+  SaveProgramBinary(prog, vs.hash, psHash, rectangles, useAlpha);
   programs_[key] = prog;
   return prog;
 }

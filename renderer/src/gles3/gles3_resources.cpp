@@ -1213,10 +1213,17 @@ GLuint Gles3Resources::TextureFor(const uint32_t words[6], uint32_t& widthOut, u
 
   if (!isCubeOut) {
     if (const Resolved* r = ResolvedAt(baseAddr)) {
-      widthOut = r->guestWidth > 0 ? r->guestWidth : r->width;
-      heightOut = r->guestHeight > 0 ? r->guestHeight : r->height;
-      resolvedOut = r;
-      return r->tex;
+      if (watch_ && RangeDirtiedSince(baseAddr, baseAddr + 4096u, r->lastWriteSeq)) {
+        const uint32_t rAddr = baseAddr & 0x1FFFF000u;
+        if (lastFrontbuffer_ == r) lastFrontbuffer_ = nullptr;
+        if (r->tex) glDeleteTextures(1, &resolved_[rAddr].tex);
+        resolved_.erase(rAddr);
+      } else {
+        widthOut = r->guestWidth > 0 ? r->guestWidth : r->width;
+        heightOut = r->guestHeight > 0 ? r->guestHeight : r->height;
+        resolvedOut = r;
+        return r->tex;
+      }
     }
   }
 

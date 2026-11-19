@@ -72,6 +72,8 @@ class Gles3Shaders {
   };
 
   static uint64_t HashWords(const uint32_t* words, uint32_t count, bool pixel);
+  bool EnsureStageCompiled(Stage& stage);
+  void PrewarmCache();
   GLuint CompileShader(GLenum type, const std::string& source, const char* label);
   GLuint LinkBuiltin(const char* vsSrc, const char* fsSrc, const char* label);
   std::filesystem::path BinaryCachePath(uint64_t vsHash, uint64_t psHash, bool rect,
@@ -79,10 +81,27 @@ class Gles3Shaders {
   GLuint TryLoadProgramBinary(uint64_t vsHash, uint64_t psHash, bool rect, bool alphaTest);
   void SaveProgramBinary(GLuint prog, uint64_t vsHash, uint64_t psHash, bool rect, bool alphaTest);
 
+  struct HashProgramKey {
+    uint64_t vsHash = 0;
+    uint64_t psHash = 0;
+    bool rect = false;
+    bool alphaTest = false;
+    bool operator==(const HashProgramKey& o) const {
+      return vsHash == o.vsHash && psHash == o.psHash && rect == o.rect && alphaTest == o.alphaTest;
+    }
+  };
+  struct HashProgramKeyHash {
+    size_t operator()(const HashProgramKey& k) const {
+      return static_cast<size_t>(k.vsHash ^ (k.psHash * 0x9E3779B97F4A7C15ULL)) ^
+             (k.rect ? 1u : 0u) ^ (k.alphaTest ? 2u : 0u);
+    }
+  };
+
   std::filesystem::path cacheDir_;
   std::vector<Stage> stages_;
   std::unordered_map<uint64_t, Handle> byHash_;
   std::unordered_map<ProgramKey, GLuint, ProgramKeyHash> programs_;
+  std::unordered_map<HashProgramKey, GLuint, HashProgramKeyHash> prewarmed_;
   Handle current_[2] = {0, 0};
 
   GLuint nullFs_ = 0;
