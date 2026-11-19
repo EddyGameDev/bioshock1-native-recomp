@@ -82,10 +82,17 @@ On-device diagnostics of the movie shader (`ps=7c4ba4eecf8393e0`) show it is cor
 - Final exported alpha is `pc[3].w = 1.0`, so the movie quad itself is fully opaque.
 
 A prototype that suppressed the deferred multiplicative spotlight pass (`bc0=0x04000400`,
-`dst *= srcColor`) only in movie frames was built but could not be evaluated because
-automated navigation kept loading a newer autosave past the projector scene. It was
-reverted rather than shipped unverified. A **save made immediately before pulling the
-Bathysphere lever** is needed to evaluate it reliably.
+`dst *= srcColor`) only in movie frames was built and, using a Crash Site save that
+reliably reaches the lever, A/B tested on device. It made **no difference** (33 FPS and
+the same dim movie before and after; the suppression log never fired, so that pass is
+not even issued in movie frames). The hypothesis is disproven and the prototype was
+reverted.
+
+The next step is a full draw-list diff against Xenia for one movie frame: we have now
+ruled out the depth-fog pass, the two fullscreen src-alpha passes, and the multiplicative
+spotlight pass. The remaining candidates are the resolved movie texture's path into the
+3D projector quad (no fetch of a 1280x720 colour resolve was observed in the scene) or
+the compositing order of the bathysphere background.
 
 ### Implemented: deferred scaled-resolve fast path (`v0.0.5.4` work)
 
