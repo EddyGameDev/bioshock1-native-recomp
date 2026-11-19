@@ -67,7 +67,9 @@ class Gles3Resources {
     uint64_t fingerprint = 0;
     uint64_t lastFrame = 0;
     uint64_t lastCheckedFrame = 0;
+    uint64_t dynamicUntilFrame = 0;
     uint32_t stableCount = 0;
+    bool compressed = false;
     uint64_t watchToken = 0;
   };
 

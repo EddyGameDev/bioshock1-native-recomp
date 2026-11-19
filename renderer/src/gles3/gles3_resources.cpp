@@ -1056,6 +1056,7 @@ void Gles3Resources::UploadTextureData(GuestTexture& tex, const uint32_t words[6
   tex.height = texH;
   tex.mipLevels = mipCount;
   tex.address = baseAddr;
+  tex.compressed = fmt.compressed;
   tex.byteSize = static_cast<uint32_t>(std::min<size_t>(faceBytes * faces, totalMem - baseAddr));
   tex.fingerprint = Fingerprint(physBase + baseAddr, tex.byteSize);
   tex.lastCheckedFrame = frame_;
@@ -1096,18 +1097,23 @@ GLuint Gles3Resources::TextureFor(const uint32_t words[6], uint32_t& widthOut, u
   if (it != textures_.end()) {
     GuestTexture& t = it->second;
     t.lastFrame = frame_;
+    // Uncompressed textures (e.g. Bink video Y/Cr/Cb planes, dynamic UI) and recently mutated
+    // textures must be checked every frame so 30fps videos never freeze or desync at 90-120 FPS.
+    // Static compressed 3D world textures (DXT/BC) throttle after 16 consecutive unchanged frames.
+    const bool isDynamic = !t.compressed || (frame_ <= t.dynamicUntilFrame);
     const bool needCheck =
         t.byteSize > 0 &&
-        (t.stableCount < 2u ? (t.lastCheckedFrame != frame_)
-                            : (frame_ >= t.lastCheckedFrame + 30u));
+        (isDynamic || t.stableCount < 16u ? (t.lastCheckedFrame != frame_)
+                                          : (frame_ >= t.lastCheckedFrame + 30u));
     if (needCheck) {
       t.lastCheckedFrame = frame_;
       if (const uint8_t* ptr = PhysicalPtr(t.address, t.byteSize)) {
         const uint64_t fp = Fingerprint(ptr, t.byteSize);
         if (fp != t.fingerprint) {
           t.stableCount = 0;
+          t.dynamicUntilFrame = frame_ + 300u;
           UploadTextureData(t, words);
-        } else if (t.stableCount < 2u) {
+        } else if (!isDynamic && t.stableCount < 16u) {
           ++t.stableCount;
         }
       }
@@ -1192,14 +1198,14 @@ GLuint Gles3Resources::VertexBufferFor(uint32_t address, uint32_t bytes, size_t&
     const bool isVolatile = (frame_ <= vb.volatileUntilFrame);
     const bool needCheck =
         (wanted > vb.uploadedBytes) || isVolatile ||
-        (vb.stableCount < 2u ? (vb.lastCheckedFrame != frame_)
-                             : (frame_ >= vb.lastCheckedFrame + 16u));
+        (vb.stableCount < 16u ? (vb.lastCheckedFrame != frame_)
+                              : (frame_ >= vb.lastCheckedFrame + 16u));
     if (needCheck) {
       vb.lastCheckedFrame = frame_;
       const uint64_t fp = Fingerprint(ptr, wanted);
       if (wanted > vb.uploadedBytes || fp != vb.fingerprint) {
         if (fp != vb.fingerprint && wanted <= vb.uploadedBytes) {
-          vb.volatileUntilFrame = frame_ + 60u;
+          vb.volatileUntilFrame = frame_ + 180u;
           vb.stableCount = 0;
           if (size <= 65536u && vbRingPtr_) {
             return allocVbRing(ptr, size);
@@ -1213,7 +1219,7 @@ GLuint Gles3Resources::VertexBufferFor(uint32_t address, uint32_t bytes, size_t&
                      GL_DYNAMIC_DRAW);
         glBufferSubData(GL_SHADER_STORAGE_BUFFER, 0, static_cast<GLsizeiptr>(wanted), ptr);
         glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0);
-      } else if (vb.stableCount < 2u) {
+      } else if (vb.stableCount < 16u) {
         ++vb.stableCount;
       }
     }
