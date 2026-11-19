@@ -1,6 +1,14 @@
 # Status — verified facts, not aspirations
 
-Last updated: 2026-11-19 (`v0.0.5-experimental` — playable in-game on Android & Windows with custom D3D11/GLES3.2 renderers, audio, full Xbox 360 touch controls, and working Save/Load).
+Last updated: 2026-11-19 (`v0.0.5.3-experimental` — playable in-game on Android & Windows with custom D3D11/GLES3.2 renderers, ahead-of-time shader pre-warming, surviving audio across transitions, full Xbox 360 touch controls, and working Save/Load).
+
+## ✅ `v0.0.5.3-experimental` (Android & Windows): Audio Survival Fix, Ahead-of-Time Shader Pre-Warming & Hardware Write-Watch
+
+- **Audio Survival Fix (`third_party/rexglue-git/src/kernel/apu.cpp`):** Fixed a semaphore credit leak in `APU::WorkerMain()` where silent guest callbacks (e.g. 2K intro → Title Screen or level-load transitions) returned without calling `SubmitFrame()`, permanently draining credits until audio deadlocked. Silent callbacks now pace by 5 ms and refund their credit so audio survives all transitions without stretching.
+- **AAudio & Threading Tuning (`sdl3_audio_driver.cpp`, `main.cpp`, `MainActivity.kt`, `android_custom_driver.cpp`):** Restored `AAUDIO_PERFORMANCE_MODE_LOW_LATENCY` with 256-frame callback alignment, automatic sample-rate resampling for non-48 kHz devices, `--apu.max_queued_frames=32`, and `--gpu.custom.vsync=true`; removed `sustainedPerformanceMode` clock throttling and GPU thread `-8` priority starvation.
+- **Ahead-of-Time Shader Pre-Warming (`gles3_shaders.cpp`):** `PrewarmCache()` pre-loads all cached `.glesbin` program binaries at startup (`prewarmed=741` in ~0.66 s on Adreno 710) and `Intern()` defers `glCompileShader()` until a binary cache miss occurs, eliminating repeat load-in shader stutters.
+- **Hardware Write-Watch (`gles3_resources.cpp`):** Wired `Gles3Resources` to `rex::IPhysicalWriteListener` / `WatchPhysicalWrites` for textures, VBs, and IBs, plus CPU-overwrite invalidation for resolved render targets.
+- **Known Issue (Bathysphere Projector Cutscene):** A 1-frame draw dump (`946` draws) confirmed the projector video renders in-scene, but sits behind a dark brown overlay — pointing to `DUMP#853` (fullscreen depth-sampled fog pass `ps=38fc8859e11347ce`, `bc0=0x07060706`, `dc=0x18701231`, `t0=f22:1280x720(R)`) or `DUMP#833` (deferred spotlight volume `ps=10ee2aad4ad76b55`). Tracked for `v0.0.5.4`.
 
 ## ✅ `v0.0.5-experimental` (Android & Windows): In-Game Playable, Save/Load, Audio, Custom GLES 3.2 & D3D11 Renderers
 

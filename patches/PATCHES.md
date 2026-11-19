@@ -67,8 +67,14 @@ hand; the patch is small and each hunk is documented in
 - `xam_user.cpp` (`XamUserWriteProfileSettings`): persist `kInt32`, `kInt64`,
   `kFloat`, and `kDouble` profile settings alongside binary/Unicode settings.
 - `sdl3_audio_driver.cpp`: replace the Android no-op stub with a dynamic
-  `dlopen("libaaudio.so")` native 48 kHz float32 stereo AAudio backend so in-game
-  XMA audio plays on Android devices.
+  `dlopen("libaaudio.so")` native 48 kHz float32 stereo AAudio backend
+  (`AAUDIO_PERFORMANCE_MODE_LOW_LATENCY`, 256-frame callback alignment, and
+  automatic linear resampling if hardware rate != 48 kHz).
+- `apu.h` / `apu.cpp` (`APU::WorkerMain` / `APU::SubmitFrame`): track
+  `frames_submitted` per render client; if a guest audio callback returns without
+  submitting a frame (e.g. silent intro/menu/gameplay transitions), pace by 5 ms
+  and refund the semaphore credit so the audio worker never drains to 0 credits
+  and deadlocks.
 - **Custom renderer (Windows D3D11 + Android GLES 3.2):** a Lanczos2 guest-output
   upscale shader (`host/shaders/bytecode/d3d12_5_1/guest_output_lanczos_ps.h`,
   source under `renderer/shaders/`) plus the standalone `rexgpu-xenos-custom`

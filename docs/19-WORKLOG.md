@@ -6,6 +6,27 @@ holds the current snapshot; this file holds the history.
 
 ---
 
+## Session 18 — 2026-11-19 — `v0.0.5.3-experimental` (Audio Credit-Leak Fix, Ahead-of-Time Shader Pre-Warming, Write-Watch & Cutscene Frame Dump)
+
+**Goal:** eliminate repeat load-in shader stutters on Android, fix audio stretching and audio dropout after the 2K intros, and diagnose the Bathysphere projector cutscene brown overlay.
+**Status: ACHIEVED for shader pre-warming & audio (`v0.0.5.3-experimental`); cutscene brown overlay root-cause narrowed via 1-frame draw dump.**
+
+Done:
+  - **Audio Survival Fix (`third_party/rexglue-git/src/kernel/apu.h`, `apu.cpp`):**
+    Found why audio played during the 2K intros and cut out permanently at the Title Screen: `APU::WorkerMain()` consumed a semaphore credit per guest callback, and `AudioSystem` only released credits inside `on_frame_played()` when a submitted frame played. During silent transitions where the guest callback returned without calling `SubmitFrame()`, credits leaked until the semaphore hit 0 and deadlocked forever. Added per-client `frames_submitted` tracking; silent callbacks now sleep 5 ms (one Xbox 360 audio period) and refund their credit. Verified on SM-A366B: audio now survives 2K intros -> Title Screen -> Gameplay cleanly with no stretching.
+  - **AAudio & Scheduling Fixes (`sdl3_audio_driver.cpp`, `main.cpp`, `MainActivity.kt`, `android_custom_driver.cpp`):**
+    - Removed `window.setSustainedPerformanceMode(true)` (which capped CPU/GPU clocks) and removed `setpriority(PRIO_PROCESS, 0, -8)` on the GPU worker thread (which starved the guest XMA audio thread).
+    - Restored `AAUDIO_PERFORMANCE_MODE_LOW_LATENCY` (avoiding 1920-frame / 40 ms legacy bursts that outpaced XAudio2's submitted frames and stretched audio), locked `setFramesPerDataCallback(256)`, added automatic linear resampling if device rate != 48 kHz, raised `--apu.max_queued_frames=32`, and enabled `--gpu.custom.vsync=true`.
+  - **Ahead-of-Time GLES 3.2 Shader Pre-Warming (`gles3_shaders.h`, `gles3_shaders.cpp`, `gles3_backend.cpp`):**
+    - `Gles3Shaders::Intern()` now defers `glCompileShader()` until a binary cache miss instead of recompiling every VS/PS stage on every boot.
+    - `PrewarmCache()` scans `cacheDir_` for `*.glesbin` files and pre-loads them at `Initialize()` (`prewarmed=741` in ~0.66 s on Adreno 710; Bathysphere/Rapture runs at 50–53 FPS with zero shader compilation hitches).
+  - **Hardware Write-Watch (`gles3_resources.h`, `gles3_resources.cpp`):**
+    Wired `Gles3Resources` to `rex::IPhysicalWriteListener` (`OnPhysicalWrite` / `WatchPhysicalWrites`) for textures, VBs, and IBs, plus CPU-overwrite invalidation for resolved render targets.
+  - **Cutscene Brown Overlay Investigation:**
+    Compared Xenia vs Android screenshots and captured a 1-frame draw dump (`946` draws) on SM-A366B during the Bathysphere cutscene. The projector video renders inside the 3D scene, followed by `DUMP#832–#833` (deferred spotlight volume `ps=10ee2aad4ad76b55`, `bc0=0x04000400`, `dc=0x18704543`) and `DUMP#853` (fullscreen depth-sampled fog pass `ps=38fc8859e11347ce`, `bc0=0x07060706`, `dc=0x18701231`, `t0=f22:1280x720(R)`). Next step for `v0.0.5.4`: inspect those two shaders' GLSL and depth/stencil behavior.
+
+---
+
 ## Session 17 — 2026-11-19 — `v0.0.4` to `v0.0.5-experimental` (Custom GLES 3.2 Renderer, Full Touch Controls, AAudio, Save/Load Fix & Cutscene/Perf Pass)
 
 **Goal:** bring the Android and Windows ports to in-game playability with custom

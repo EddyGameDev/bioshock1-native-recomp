@@ -137,8 +137,20 @@ Android build compiles `rexgpu-xenos-custom` against **OpenGL ES 3.2 + EGL**
     consecutive unchanged checks.
   - Per-frame texture GC eviction is capped so level streaming does not cause
     frame-time spikes.
-- **Display-priority GPU worker & sustained performance (`android_custom_driver.cpp`):**
-  - The GPU command processor thread boosts its scheduling priority to Android
-    display priority (`setpriority(PRIO_PROCESS, 0, -8)` with fallback to `-4`),
-    paired with `window.setSustainedPerformanceMode(true)` and
-    `android:appCategory="game"`.
+- **Ahead-of-time shader binary pre-warming & lazy `glCompileShader` (`gles3_shaders.{h,cpp}`):**
+  - `Gles3Shaders::Initialize()` runs `PrewarmCache()`, scanning `cacheDir_` for
+    all saved `*.glesbin` program binaries and loading them via `glProgramBinary`
+    before the first frame (`prewarmed=741` in ~0.66 s on Adreno 710).
+  - `Intern()` defers `glCompileShader()` until an actual binary cache miss
+    occurs, eliminating multi-second shader recompilation stalls on repeat boots.
+- **Hardware write-watch & resolved-target invalidation (`gles3_resources.{h,cpp}`):**
+  - `Gles3Resources` implements `rex::IPhysicalWriteListener` (`WatchPhysicalWrites`)
+    using page-level (`4 KB`) and chunk-level (`64 KB`) atomic sequence tables,
+    eliminating per-frame CPU `Fingerprint()` polling on static textures, VBs,
+    and IBs while catching dynamic writes immediately.
+  - CPU writes to a physical address previously occupied by a resolved render
+    target invalidate the stale resolved surface so dynamic textures upload cleanly.
+- **VSync & scheduling (`main.cpp`, `android_custom_driver.cpp`):**
+  - `--gpu.custom.vsync=true` prevents 220+ FPS thermal drain on menus, and the
+    GPU worker thread runs at normal priority (without `sustainedPerformanceMode`)
+    so the SoC boosts cleanly without starving the guest XMA audio thread.
