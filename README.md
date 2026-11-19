@@ -6,7 +6,7 @@
 >
 > **Required Game Version:** Built against the **Xbox 360 World Release** of BioShock 1 (**Title ID: `545407D8`**, **Media ID: `44E704F7`**). Make sure you own/dump this retail edition (other regional or re-release builds with different Media IDs are not supported).
 
-> **Release `v0.0.5-experimental`** — BioShock 1 runs natively on both **Windows** and
+> **Release `v0.0.5.3-experimental`** — BioShock 1 runs natively on both **Windows** and
 > **Android** through a **static recompilation** pipeline and the **real ReXGlue
 > runtime**, featuring custom Xenos GPU renderers (**D3D11** on Windows, **OpenGL ES 3.2**
 > on Android) with live no-restart resolution scaling (`360p`–`2160p`), working in-game
@@ -246,9 +246,15 @@ Releases follow an **experimental** pre-1.0 scheme:
 - **`v0.0.5-experimental`** — Performance & cutscene optimization release for
   Android and Windows: display-priority GPU worker thread, Android sustained
   performance mode, tiered texture fingerprint change-detection, fast row-copy
-  Bink video uploads (fixing Andrew Ryan elevator cutscene lag), `RRRR` resolved
-  depth replication for underwater fog/lighting, and `540p` / `2x` anisotropy
-  default on fresh Android installs.
+  Bink video uploads, `RRRR` resolved depth replication for underwater fog/lighting,
+  and `540p` / `2x` anisotropy default on fresh Android installs.
+- **`v0.0.5.3-experimental` (Cutscene + Audio Fix Again)** — Ahead-of-time GLES 3.2
+  shader binary pre-warming at startup (`PrewarmCache` + lazy `glCompileShader`),
+  hardware `IPhysicalWriteWatch` page tracking for textures/VBs/IBs, resolved
+  render-target CPU-overwrite invalidation, VSync enabled (`--gpu.custom.vsync=true`),
+  removal of `sustainedPerformanceMode` clock throttling and GPU thread `-8` priority
+  starvation, and clean `AAUDIO_PERFORMANCE_MODE_LOW_LATENCY` audio with sample-rate
+  resampling (no audio stretching).
 
 See the [Releases page](../../releases) for notes.
 
