@@ -34,6 +34,12 @@ Done:
     fullscreen passes with identical blend/depth/alpha-test state. A prototype that
     suppressed both was deployed and confirmed to trigger but did **not** remove the
     brown sheet, so it was reverted; the remaining overlay comes from another pass.
+  - **Xenia reference frames supplied by user:** the projector movie is bright on
+    Xenia, so Android is darkening it post-draw rather than hiding it. Verified the
+    movie shader fetches (Y 1280x720 + Cb/Cr 640x360, fmt=2, swizzle RRR1), its GLSL
+    YUV->RGB math, and its BT.601 pixel constants including alpha=1 — all correct.
+    A multiplicative-spotlight suppression prototype was reverted because automated
+    navigation loaded a newer autosave past the scene before it could be evaluated.
   - **Implemented deferred scaled-resolve fast path:** verified `copy_dest_exp_bias`
     layout against Xenia `registers.h`; added `expBias`/`clampMode` to
     `Gles3Resources::Resolved`; `ExecuteResolve` now uses `glCopyImageSubData` for

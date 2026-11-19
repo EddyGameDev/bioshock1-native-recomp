@@ -66,6 +66,27 @@ Conclusion: the brown sheet is not a single depth-fog pass; it is a stack of Xen
 fullscreen passes whose alpha handling differs from the hardware. Resolving it needs a
 frame-by-frame draw comparison against Xenia rather than another single-pass guess.
 
+### Xenia reference comparison (2026-11-19)
+
+The user supplied four Xenia screenshots of the same projector sequence. They show a
+**bright, glowing movie rectangle centred on screen** with only a dark brown surround.
+On Android the movie is present but barely visible — so the movie is being **darkened
+after it is drawn**, not simply covered by a static overlay.
+
+On-device diagnostics of the movie shader (`ps=7c4ba4eecf8393e0`) show it is correct:
+- Three fetches: Y at 1280×720, Cb and Cr at 640×360, all `fmt=2` (`k_8`) with swizzle
+  `(R,R,R,1)` — the standard planar Bink layout.
+- Translated GLSL is a textbook YUV→RGB conversion, and its pixel constants are exact
+  BT.601 limited-range coefficients: `(1.1641, 1.5958, 0, -0.8707)`,
+  `(1.1641, -0.8135, -0.3914, 0.5297)`, `(1.1641, 0, 2.0178, -1.0817)`, alpha `(1,0,0,1)`.
+- Final exported alpha is `pc[3].w = 1.0`, so the movie quad itself is fully opaque.
+
+A prototype that suppressed the deferred multiplicative spotlight pass (`bc0=0x04000400`,
+`dst *= srcColor`) only in movie frames was built but could not be evaluated because
+automated navigation kept loading a newer autosave past the projector scene. It was
+reverted rather than shipped unverified. A **save made immediately before pulling the
+Bathysphere lever** is needed to evaluate it reliably.
+
 ### Implemented: deferred scaled-resolve fast path (`v0.0.5.4` work)
 
 `RB_COPY_DEST_INFO::copy_dest_exp_bias` is bits 16–21 (confirmed against Xenia's
