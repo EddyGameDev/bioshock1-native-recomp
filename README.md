@@ -3,6 +3,8 @@
 [![Join the Discord](https://img.shields.io/badge/Discord-Join%20Community%20%26%20Feedback-5865F2?style=for-the-badge&logo=discord&logoColor=white)](https://discord.gg/aaDRJQNw8T)
 
 > **Community & Testing Feedback:** Join the Discord server to report bugs, share device performance, and follow progress: **https://discord.gg/aaDRJQNw8T**
+>
+> **Required Game Version:** Built against the **Xbox 360 World Release** of BioShock 1 (**Title ID: `545407D8`**, **Media ID: `44E704F7`**). Make sure you own/dump this retail edition (other regional or re-release builds with different Media IDs are not supported).
 
 > **Release `v0.0.1-experimental`** — the genuine BioShock 1 title screen renders
 > on Android through a **static recompilation** pipeline and the **real ReXGlue
