@@ -55,6 +55,11 @@ class Gles3Resources final : public rex::IPhysicalWriteListener {
     uint32_t base = 0;
     bool isDepth = false;
     bool rbSwapped = false;
+    // Set when a resolve used glCopyImageSubData with a non-unit exponent bias /
+    // a clamp mode. The shader path applied these at resolve time; for the fast
+    // path they are deferred to sample time via textureAdjustment[].
+    int8_t expBias = 0;
+    uint8_t clampMode = 0;  // 0 = none, 1 = [0,1], 2 = [-1,1]
     uint32_t lastWriteSeq = 0;
     uint64_t lastFrame = 0;
   };

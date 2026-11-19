@@ -411,12 +411,17 @@ void CustomXenosGraphicsDriver::WorkerLoop(std::stop_token stop) {
     const auto now = std::chrono::steady_clock::now();
     if (now - lastReport >= std::chrono::seconds(10)) {
       const uint64_t curFrame = frameIndex_;
+      const auto rs = backend_.GetResolveStats();
       GLESLOG(
-          "PERF(10s): swaps=%llu batches=%u exec=%.1fms (draw=%.1f/%u res=%.1f/%u pres=%.1f wait=%.1f/%u lastWait=0x%X:%X/%X) shaders=%u/%u",
+          "PERF(10s): swaps=%llu batches=%u exec=%.1fms (draw=%.1f/%u res=%.1f/%u pres=%.1f wait=%.1f/%u lastWait=0x%X:%X/%X) "
+          "resolves=(color=%u depth=%u direct=%u skip=%u rej[s=%u c=%u b=%u] px=%llu) shaders=%u/%u",
           static_cast<unsigned long long>(curFrame - lastFrameIdx), accBatches, accExecMs,
           g_profDrawMs, g_profDraws, g_profResolveMs, g_profResolves, g_profPresentMs,
           g_profWaitMs, g_profWaits, g_lastWaitAddr, g_lastWaitVal, g_lastWaitRef,
+          rs.color, rs.depth, rs.directCopy, rs.skipped, rs.rejectScale, rs.rejectClamp,
+          rs.rejectBounds, static_cast<unsigned long long>(rs.pixels),
           backend_.Shaders().CompiledProgramCount(), backend_.Shaders().BinaryCacheHits());
+      backend_.ResetResolveStats();
       lastFrameIdx = curFrame;
       accExecMs = 0.0;
       accBatches = 0;

@@ -6,6 +6,39 @@ holds the current snapshot; this file holds the history.
 
 ---
 
+## Session 19 — 2026-11-19 — On-device 540p perf & cutscene shader-state capture (ADB)
+
+**Goal:** reproduce the reported 22 FPS drop in Rapture, identify the GPU bottleneck,
+and capture the exact GL state of the two shaders implicated in the Bathysphere
+projector brown overlay. **Status: perf bottleneck characterized; cutscene shader
+state captured; no visual regression.**
+
+Done:
+  - Connected to SM-A366B via ADB (`com.bioshock1.recomp`, v0.0.5.3-experimental)
+    and loaded the `CONTINUE` save at 540p (RES pill), reproducing 22–26 FPS.
+  - Added `PERF(10s)` resolve breakdown counters (`color/depth/direct/skip/reject[s/c/b]/px`)
+    to `gles3_backend.{h,cpp}` and `android_custom_driver.cpp`; rebuilt
+    `librexgpu-xenos-custom.so`, repackaged `app-release.apk`, installed with `adb install -r`.
+  - Added one-shot `CUTSCENE-DIAG` logging for `ps=38fc8859e11347ce` and
+    `ps=10ee2aad4ad76b55`, placed **after** `bindStageTextures()` so
+    `textureAdjustment[]` is current (an earlier placement logged stale values).
+  - Measurements: GPU-bound (`pres≈6.6 s/10 s`), ~620 draws + ~53 resolves per frame,
+    Lanczos vs Bilinear A/B showed no gain, ~90% of color resolves rejected from
+    `glCopyImageSubData` due to `colorScale != 1.0`, no thermal throttling.
+  - Implemented + measured consecutive-identical resolve dedup (`skip=0`, no effect).
+  - Captured both suspect shaders' blend/depth/stencil/fetch state (see `10-STATUS.md`).
+  - **Implemented deferred scaled-resolve fast path:** verified `copy_dest_exp_bias`
+    layout against Xenia `registers.h`; added `expBias`/`clampMode` to
+    `Gles3Resources::Resolved`; `ExecuteResolve` now uses `glCopyImageSubData` for
+    *all* color resolves and defers the bias/clamp to sample time;
+    `bindStageTextures()` folds them into `textureAdjustment[].z/.w`;
+    `ExecutePresent()` passes the bias via `PresentParams::w` and both present shaders
+    apply `exp2(u_params.w)`; bumped `XenosGlsl::Version()` to v3 to invalidate stale
+    binaries. Built, installed and A/B tested on device: `direct == color` (100%),
+    resolve time 665→544 ms/10 s, no visual regressions, modest FPS gain (~25→~27).
+
+---
+
 ## Session 18 — 2026-11-19 — `v0.0.5.3-experimental` (Audio Credit-Leak Fix, Ahead-of-Time Shader Pre-Warming, Write-Watch & Cutscene Frame Dump)
 
 **Goal:** eliminate repeat load-in shader stutters on Android, fix audio stretching and audio dropout after the 2K intros, and diagnose the Bathysphere projector cutscene brown overlay.

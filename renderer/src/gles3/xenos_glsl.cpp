@@ -1067,7 +1067,7 @@ struct Translator {
 namespace bs1::renderer::XenosGlsl {
 
 uint64_t Version() {
-  static const char* const tag = "bs1-xenos-glsl-es320-v2-fast-adreno";
+  static const char* const tag = "bs1-xenos-glsl-es320-v3-deferred-resolve-clamp";
   uint64_t hash = 14695981039346656037ULL;
   for (const char* p = tag; *p; ++p) {
     hash ^= static_cast<unsigned char>(*p);
@@ -1151,12 +1151,16 @@ Translation Translate(const std::vector<uint32_t>& words, bool pixel) {
       "}\n"
       "vec4 textureAdjust(uint slot, vec4 v) {\n"
       "    uvec4 adj = textureAdjustment[slot];\n"
-      "    if (adj.x == 0x688u && (adj.y | adj.z) == 0u) return v;\n"
+      "    if (adj.x == 0x688u && (adj.y | adj.z | adj.w) == 0u) return v;\n"
       "    vec4 r = vec4(adjustComponent(v, adj.x & 7u, adj.y & 3u),\n"
       "                  adjustComponent(v, (adj.x >> 3u) & 7u, (adj.y >> 2u) & 3u),\n"
       "                  adjustComponent(v, (adj.x >> 6u) & 7u, (adj.y >> 4u) & 3u),\n"
       "                  adjustComponent(v, (adj.x >> 9u) & 7u, (adj.y >> 6u) & 3u));\n"
       "    if (adj.z != 0u) r *= uintBitsToFloat(adj.z ^ 0x3F800000u);\n"
+      "    // Deferred resolve clamp: fast-path copies store their clamp mode here\n"
+      "    // instead of running a fullscreen resolve shader.\n"
+      "    if (adj.w == 1u) r = clamp(r, 0.0, 1.0);\n"
+      "    else if (adj.w == 2u) r = clamp(r, -1.0, 1.0);\n"
       "    return r;\n"
       "}\n";
 

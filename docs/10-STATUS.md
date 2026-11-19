@@ -2,6 +2,67 @@
 
 Last updated: 2026-11-19 (`v0.0.5.3-experimental` — playable in-game on Android & Windows with custom D3D11/GLES3.2 renderers, ahead-of-time shader pre-warming, surviving audio across transitions, full Xbox 360 touch controls, and working Save/Load).
 
+## On-device diagnosis (2026-11-19, SM-A366B / Adreno 710, 540p): 22–26 FPS in Rapture
+
+A live ADB session loaded the `CONTINUE` save straight into the Bathysphere/Rapture
+transition at 540p and captured the `PERF(10s)` counters. The 22 FPS report is
+**reproduced and characterized**:
+
+- `swaps=251–263 / 10 s` (25–26 FPS); `pres=6.5–6.7 s` of every 10 s. The GPU worker
+  is blocked in `eglSwapBuffers()` waiting for GPU completion — the port is **GPU-bound**,
+  not guest-CPU-bound (`wait=3 µs` in-game). Not thermal (37.5 °C, charging).
+- Each in-game frame issues ~**620 draws** and ~**53 resolves** (`color≈47, depth≈5`).
+- A live A/B of the present filter (Lanczos → Bilinear, same scene) had **no measurable
+  FPS benefit** (both ~22 FPS, `pres≈6.9 s`) — the upscale shader is not the bottleneck.
+- The dominant resolve cost is now identified: `reject[s=~11000]` of ~12,000 color
+  resolves per 10 s fail `glCopyImageSubData` because **`colorScale != 1.0`**
+  (`rejectClamp=0`, `rejectBounds=0`). ~90% of EDRAM→host color resolves therefore take
+  the FBO + fullscreen-triangle path. This is the highest-value target for a future
+  fast-path that can apply the scale without a fullscreen pass.
+- Consecutive-identical resolve deduplication was implemented and measured: `skip=0`
+  over a full session, so no redundant resolves exist — the optimization is harmless
+  but ineffective.
+
+### Cutscene brown-overlay state capture (accurate, post-`bindStageTextures`)
+
+`CUTSCENE-DIAG` logging (one shot per suspect shader hash) confirmed both suspect
+passes execute in the very first Rapture frames:
+
+- `ps=38fc8859e11347ce` (fog): `bc0=0x07060706` (src=DST_ALPHA, dst=1-DST_ALPHA),
+  `dc=0x1c718233` (stencil EQUAL 0, depth LEQUAL, no depth write), `colorMask=0xF`,
+  1 fetch: depth texture fmt=22, 1280×720, `adj=0xB40` = **(R, R, 1, 1)** — RRRR
+  replication is correct, so the depth sample itself is not obviously wrong.
+- `ps=10ee2aad4ad76b55` (spotlight): 3 fetches, two depth textures (1280×720 and
+  512×512), `bc0=0x04000400`, `dc=0x1c704533`.
+
+Next step: compare the stencil reference/mask (`0x00ffff00` → ref=0, read=0xFF, write=0xFF)
+and the destination-alpha content of the preceding pass against Xenia's trace, since
+the fog blend is driven by destination alpha and the overwrite is stencil-keyed.
+
+### Implemented: deferred scaled-resolve fast path (`v0.0.5.4` work)
+
+`RB_COPY_DEST_INFO::copy_dest_exp_bias` is bits 16–21 (confirmed against Xenia's
+`registers.h`), so the `colorScale != 1.0` rejections were real — Xenia also needs a
+shader for biased resolves. We avoid that shader instead of accepting it:
+
+- `glCopyImageSubData` is always format-compatible here because the resolved texture
+  is allocated with the **source** GL format (`dstFmt = ct->internalFormat`).
+- The resolve's exponent bias and clamp mode are stored on `Gles3Resources::Resolved`
+  instead of being baked into the pixels. `bindStageTextures()` folds them into the
+  existing `textureAdjustment[slot][2]` exponent and the new `[3]` clamp field, so
+  every shader consumer sees the same value it did before.
+- `ExecutePresent()` passes the bias through `PresentParams::w`; both present shaders
+  apply `exp2(u_params.w)` before the final clamp, so frontbuffer resolves are fast too.
+- `XenosGlsl::Version()` bumped to `v3-deferred-resolve-clamp` so stale `.glesbin`
+  binaries (which lack the clamp branch) cannot be loaded. One-time shader recompile.
+
+**Measured on-device:** color resolves using `glCopyImageSubData` went from ~10% to
+**100%** (`direct == color`), resolve CPU time fell ~18% (665 ms → 544 ms per 10 s),
+with no visual regressions. Overall FPS improved only modestly (~25 → ~27 in
+comparable scenes): the remaining GPU cost is the ~600 Xenos scene draws per frame,
+not resolves. The cutscene `CUTSCENE-DIAG` gate was switched from shader hash to the
+distinctive blend control (`0x07060706` / `0x04000400`) so it survives the version bump.
+
 ## ✅ `v0.0.5.3-experimental` (Android & Windows): Audio Survival Fix, Ahead-of-Time Shader Pre-Warming & Hardware Write-Watch
 
 - **Audio Survival Fix (`third_party/rexglue-git/src/kernel/apu.cpp`):** Fixed a semaphore credit leak in `APU::WorkerMain()` where silent guest callbacks (e.g. 2K intro → Title Screen or level-load transitions) returned without calling `SubmitFrame()`, permanently draining credits until audio deadlocked. Silent callbacks now pace by 5 ms and refund their credit so audio survives all transitions without stretching.

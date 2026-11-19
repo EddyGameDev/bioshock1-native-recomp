@@ -9,6 +9,7 @@
 
 #include <atomic>
 #include <cstdint>
+#include <cstring>
 #include <filesystem>
 #include <mutex>
 #include <vector>
@@ -47,6 +48,20 @@ class Gles3Backend {
 
   uint32_t ObservedMainHeight() const { return observedMainHeight_; }
   void ObserveSwapHeight(uint32_t w, uint32_t h);
+
+  // Per-window resolve breakdown, consumed by the Android PERF(10s) log.
+  struct ResolveStats {
+    uint32_t depth = 0;
+    uint32_t color = 0;
+    uint32_t directCopy = 0;
+    uint32_t skipped = 0;
+    uint32_t rejectScale = 0;
+    uint32_t rejectClamp = 0;
+    uint32_t rejectBounds = 0;
+    uint64_t pixels = 0;
+  };
+  ResolveStats GetResolveStats() const { return resolveStats_; }
+  void ResetResolveStats() { resolveStats_ = ResolveStats{}; }
 
  private:
   struct DrawConstantsCpu {
@@ -177,6 +192,30 @@ class Gles3Backend {
   std::vector<uint32_t> expandedIdx_;
   float packedVsFloats_[256 * 4] = {};
   float packedPsFloats_[256 * 4] = {};
+
+  ResolveStats resolveStats_{};
+
+  // Consecutive identical EDRAM->host resolves with no intervening draw are redundant.
+  struct ResolveKey {
+    uint32_t control = 0;
+    uint32_t destBase = 0;
+    uint32_t destInfo = 0;
+    uint32_t surfaceInfo = 0;
+    uint32_t tl = 0;
+    uint32_t br = 0;
+    uint32_t colorInfo[4] = {};
+    uint32_t depthInfo = 0;
+    bool frontbufferCandidate = false;
+    bool valid = false;
+    bool operator==(const ResolveKey& o) const {
+      return valid && o.valid && control == o.control && destBase == o.destBase &&
+             destInfo == o.destInfo && surfaceInfo == o.surfaceInfo && tl == o.tl && br == o.br &&
+             depthInfo == o.depthInfo && frontbufferCandidate == o.frontbufferCandidate &&
+             std::memcmp(colorInfo, o.colorInfo, sizeof(colorInfo)) == 0;
+    }
+  };
+  ResolveKey lastResolveKey_{};
+  uint32_t drawsSinceResolve_ = 0;
 };
 
 }  // namespace bs1::renderer::gles3

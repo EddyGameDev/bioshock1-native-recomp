@@ -100,7 +100,7 @@ layout(binding = 0) uniform highp sampler2D u_src;
 layout(binding = 1) uniform highp sampler2D u_gamma;
 layout(std140, binding = 4) uniform PresentParams {
   vec4 u_uvRect;   // xy = offset, zw = size
-  vec4 u_params;   // x = useGamma, y = colorScale, z = clampMode, w = fromDepth
+  vec4 u_params;   // x = useGamma, y = srcW, z = srcH, w = resolve exp bias
 };
 layout(location = 0) in vec2 v_uv;
 layout(location = 0) out vec4 frag_color;
@@ -117,6 +117,7 @@ vec3 applyGamma(vec3 c) {
 void main() {
   vec2 uv = u_uvRect.xy + v_uv * u_uvRect.zw;
   vec3 c = textureLod(u_src, uv, 0.0).rgb;
+  c *= exp2(u_params.w);
   frag_color = vec4(applyGamma(c), 1.0);
 }
 )GLSL";
@@ -127,7 +128,7 @@ layout(binding = 0) uniform highp sampler2D u_src;
 layout(binding = 1) uniform highp sampler2D u_gamma;
 layout(std140, binding = 4) uniform PresentParams {
   vec4 u_uvRect;   // xy = offset, zw = size
-  vec4 u_params;   // x = useGamma, y = srcW, z = srcH, w = unused
+  vec4 u_params;   // x = useGamma, y = srcW, z = srcH, w = resolve exp bias
 };
 layout(location = 0) in vec2 v_uv;
 layout(location = 0) out vec4 frag_color;
@@ -184,7 +185,8 @@ void main() {
   acc += textureLod(u_src, vec2(t3.x,  t3.y),  0.0).rgb * (w3.x  * w3.y);
 
   vec2 sum = w0 + w12 + w3;
-  vec3 c = clamp(acc / (sum.x * sum.y), 0.0, 1.0);
+  vec3 c = (acc / (sum.x * sum.y)) * exp2(u_params.w);
+  c = clamp(c, 0.0, 1.0);
   frag_color = vec4(applyGamma(c), 1.0);
 }
 )GLSL";

@@ -411,6 +411,8 @@ void Gles3Backend::ShutdownOnGpuThread() {
 
 bool Gles3Backend::BeginFrame(uint64_t frame) {
   UpdatePendingSurface();
+  lastResolveKey_ = ResolveKey{};
+  drawsSinceResolve_ = 0;
   if (resources_.BeginFrame(frame)) {
     for (uint32_t i = 0; i < 4; ++i) lastFboColor_[i] = 0;
     lastFboDepth_ = 0;
@@ -600,6 +602,9 @@ bool Gles3Backend::ExecuteDraw(const uint32_t* regs, uint32_t initiator, uint32_
   const Gles3Shaders::Stage* vs = shaders_.GetStage(vsH);
   const Gles3Shaders::Stage* ps = shaders_.GetStage(psH);
   if (!vs || vs->failed || !ps || ps->failed) return false;
+
+  // Any draw invalidates a cached EDRAM->host resolve: the source surface changed.
+  ++drawsSinceResolve_;
 
   const uint32_t colorMask = regs[kRegColorMask];
   const uint32_t colorControl = regs[kRegColorControl];
@@ -959,6 +964,14 @@ bool Gles3Backend::ExecuteDraw(const uint32_t* regs, uint32_t initiator, uint32_
         drawConst_.textureAdjustment[fetch.slot][1] = permutedSigns;
         int32_t expAdj = static_cast<int32_t>((words[3] >> 13) & 0x3Fu);
         if (expAdj >= 32) expAdj -= 64;
+        // A resolve that used glCopyImageSubData stored its exponent bias and clamp
+        // on the resolved texture instead of applying them in a fullscreen pass.
+        // Fold them into the fetch adjustment so sampling sees the same value.
+        uint8_t deferredClamp = 0u;
+        if (rSurf) {
+          expAdj += rSurf->expBias;
+          deferredClamp = rSurf->clampMode;
+        }
         if (expAdj == 0) {
           drawConst_.textureAdjustment[fetch.slot][2] = 0u;
         } else {
@@ -967,12 +980,51 @@ bool Gles3Backend::ExecuteDraw(const uint32_t* regs, uint32_t initiator, uint32_
           std::memcpy(&expBits, &expScale, 4);
           drawConst_.textureAdjustment[fetch.slot][2] = expBits ^ 0x3F800000u;
         }
-        drawConst_.textureAdjustment[fetch.slot][3] = 0u;
+        drawConst_.textureAdjustment[fetch.slot][3] = deferredClamp;
       }
     }
   };
   bindStageTextures(vs);
   if (psH) bindStageTextures(ps);
+
+  // Bathysphere projector cutscene investigation: log the exact GL state of the two
+  // passes implicated by the 946-draw dump (see docs/10-STATUS.md). Must run AFTER
+  // bindStageTextures so textureAdjustment[] reflects this draw, not the previous one.
+  {
+    static bool loggedFog = false;
+    static bool loggedSpot = false;
+    // Key on the distinctive blend state rather than the microcode hash: the
+    // translator version (and therefore the hash) changes with GLSL edits.
+    const bool isFog = blendControls[0] == 0x07060706u;
+    const bool isSpot = blendControls[0] == 0x04000400u;
+    if ((isFog && !loggedFog) || (isSpot && !loggedSpot)) {
+      if (isFog) loggedFog = true;
+      if (isSpot) loggedSpot = true;
+      GLESLOG(
+          "CUTSCENE-DIAG ps=%016llx vs=%016llx bc0=0x%08x dc=0x%08x stencil=0x%08x "
+          "stencilBF=0x%08x colorMask=0x%08x colorControl=0x%08x depthTex=%u colorCount=%u "
+          "hasStencil=%u depthTest=%u depthWrite=%u fetches=%zu",
+          static_cast<unsigned long long>(ps->hash), static_cast<unsigned long long>(vs->hash),
+          blendControls[0], depthControl, stencilRef, stencilRefBF, colorMask, colorControl,
+          depthTex != 0 ? 1u : 0u, colorCount, (depthControl & 1u) != 0 ? 1u : 0u,
+          (depthControl & 2u) != 0 ? 1u : 0u, (depthControl & 4u) != 0 ? 1u : 0u,
+          ps->textureFetches.size());
+      for (const XenosGlsl::TextureFetch& fetch : ps->textureFetches) {
+        if (fetch.binding >= 24 || fetch.slot >= 32) continue;
+        const uint32_t base = kRegFetchConstants + fetch.slot * 6u;
+        const uint32_t w1 = regs[base + 1];
+        const uint32_t w2 = regs[base + 2];
+        const uint32_t w3 = regs[base + 3];
+        const auto* rs = resources_.ResolvedAt(w1 & 0xFFFFF000u);
+        GLESLOG("CUTSCENE-DIAG   fetch slot=%u dim=%u base=0x%08x fmt=%u size=%ux%u swizzle=0x%03x "
+                "adj=0x%08x resolved=%u isDepth=%u",
+                fetch.slot, fetch.dimension, w1 & 0xFFFFF000u, w1 & 0x3Fu,
+                (w2 & 0x1FFFu) + 1u, ((w2 >> 13) & 0x1FFFu) + 1u, (w3 >> 1) & 0xFFFu,
+                drawConst_.textureAdjustment[fetch.slot][0], rs ? 1u : 0u,
+                rs && rs->isDepth ? 1u : 0u);
+      }
+    }
+  }
 
   // Bind vertex SSBOs
   for (const XenosGlsl::VertexFetch& vf : vs->vertexFetches) {
@@ -1390,10 +1442,33 @@ bool Gles3Backend::ExecuteResolve(const uint32_t* regs) {
       regs[kRegColorInfo0], regs[kRegColorInfo1], regs[kRegColorInfo2], regs[kRegColorInfo3]};
   const uint32_t depthInfo = regs[kRegDepthInfo];
 
+  // An EDRAM->host resolve only needs to run when the source has been drawn into
+  // since the previous resolve with identical parameters. Clears also change the
+  // source, so they invalidate the cached key below.
+  ResolveKey key{};
+  key.control = control;
+  key.destBase = destBase;
+  key.destInfo = destInfo;
+  key.surfaceInfo = surfaceInfo;
+  key.tl = tl;
+  key.br = br;
+  key.depthInfo = depthInfo;
+  key.frontbufferCandidate = (sourceSelect != 4u && width >= 480u && height >= 240u);
+  std::memcpy(key.colorInfo, colorInfos, sizeof(colorInfos));
+  const bool isCopy = (command != 3u && destBase != 0);
+  // Never skip a frontbuffer resolve: SetLastFrontbuffer() and resolved-texture
+  // re-creation on guest writes must still run so present cannot show a stale surface.
+  const bool skipCopy = isCopy && !key.frontbufferCandidate && drawsSinceResolve_ == 0 &&
+                        lastResolveKey_ == key;
+  if (skipCopy) ++resolveStats_.skipped;
+  lastResolveKey_ = key;
+  lastResolveKey_.valid = isCopy && !colorClear && !depthClear;
+  drawsSinceResolve_ = 0;
+
   bool didAny = false;
 
   // 1) Copy/resolve RT into GPU resolved texture
-  if (command != 3u && destBase != 0) {
+  if (isCopy && !skipCopy) {
     const bool fromDepth = (sourceSelect == 4u);
     GLuint srcTex = 0;
     uint32_t srcW = 1, srcH = 1;
@@ -1430,34 +1505,53 @@ bool Gles3Backend::ExecuteResolve(const uint32_t* regs) {
 
         float colorScale = 1.0f;
         float clampMode = 0.0f;
+        int32_t expBias = 0;
+        uint8_t clampModeI = 0;
         if (!fromDepth) {
           int32_t eb = static_cast<int32_t>((destInfo >> 16) & 0x3Fu);
           if (eb >= 32) eb -= 64;
+          expBias = eb;
           colorScale = std::ldexp(1.0f, eb);
           const uint32_t destFmt = (destInfo >> 7) & 0x3Fu;
           const uint32_t destNum = (destInfo >> 13) & 7u;
           const bool isFloat = (destNum == 7u) || destFmt == 30u || destFmt == 31u ||
                                destFmt == 32u || destFmt == 36u || destFmt == 37u || destFmt == 38u;
           clampMode = isFloat ? 0.0f : (destNum == 0u ? 1.0f : (destNum == 1u ? 2.0f : 0.0f));
+          clampModeI = isFloat ? 0u : (destNum == 0u ? 1u : (destNum == 1u ? 2u : 0u));
         }
 
         // Hardware direct texture copy fast path (GLES 3.2 core glCopyImageSubData):
         // skips FBO switch, state invalidation, shader/UBO bind, and full-screen draw!
         const int32_t srcX0 = static_cast<int32_t>(std::lround(hostX0));
         const int32_t srcY0 = static_cast<int32_t>(std::lround(hostY0));
-        const bool canDirectCopy =
-            !fromDepth && colorScale == 1.0f &&
-            (clampMode == 0.0f || (clampMode == 1.0f && dstFmt == GL_RGBA8)) &&
-            srcX0 >= 0 && srcY0 >= 0 &&
+        const bool boundsOk = srcX0 >= 0 && srcY0 >= 0 &&
             static_cast<uint32_t>(srcX0) + hostW <= srcW &&
             static_cast<uint32_t>(srcY0) + hostH <= srcH;
 
+        // The resolved texture is always allocated with the SOURCE GL format
+        // (dstFmt is taken from ct->internalFormat above), so glCopyImageSubData is
+        // always format-compatible. The exponent bias and clamp the old shader path
+        // applied at resolve time are deferred to sample time via textureAdjustment[]
+        // (see bindStageTextures), which makes scaled resolves eligible for the fast
+        // path too. Frontbuffers are covered as well: ExecutePresent applies the
+        // stored bias via PresentParams::w before its final clamp.
+        const bool canDirectCopy = !fromDepth && boundsOk;
+
+        if (fromDepth) ++resolveStats_.depth;
+        else ++resolveStats_.color;
+        resolveStats_.pixels += static_cast<uint64_t>(hostW) * hostH;
+
         if (canDirectCopy) {
+          ++resolveStats_.directCopy;
+          dst->expBias = expBias;
+          dst->clampMode = clampModeI;
           glCopyImageSubData(srcTex, GL_TEXTURE_2D, 0, srcX0, srcY0, 0,
                              dst->tex, GL_TEXTURE_2D, 0, 0, 0, 0,
                              static_cast<GLsizei>(hostW), static_cast<GLsizei>(hostH), 1);
           didAny = true;
         } else {
+          dst->expBias = 0;
+          dst->clampMode = 0;
           UnbindTexturesMatching(dst->tex);
           drawFboBound_ = false;
           stateDirty_ = true;
@@ -1687,7 +1781,9 @@ void Gles3Backend::ExecutePresent(uint32_t fbAddr, uint32_t fbWidth, uint32_t fb
   pp.params[0] = resources_.HasGammaLut() ? 1.0f : 0.0f;
   pp.params[1] = static_cast<float>(fb->width);
   pp.params[2] = static_cast<float>(fb->height);
-  pp.params[3] = 0.0f;
+  // Exponent bias deferred from a fast-path resolve; present does not go through
+  // textureAdjust(), so apply it here before the final clamp.
+  pp.params[3] = static_cast<float>(fb->expBias);
 
   UploadUboPresent(pp);
 
