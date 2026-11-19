@@ -1090,6 +1090,49 @@ index 2049140..f7f3965 100644
  
  /** The kernel module. The program registers one with the app or loads it from rexkernel. */
  class KernelModule final : public IModule, public IKernelControl {
+diff --git a/src/kernel/xboxkrnl/xboxkrnl_rtl.cpp b/src/kernel/xboxkrnl/xboxkrnl_rtl.cpp
+index fb6d408..27ffa8d 100644
+--- a/src/kernel/xboxkrnl/xboxkrnl_rtl.cpp
++++ b/src/kernel/xboxkrnl/xboxkrnl_rtl.cpp
+@@ -457,7 +457,10 @@ void RtlEnterCriticalSection_entry(GuestPtrT<X_RTL_CRITICAL_SECTION> cs) {
+     KeWaitForSingleObject(cs.GetGuestAddress(), 8, 0, 0, nullptr);
+   }
+ 
+-  REX_ASSERT(cs->owning_thread == 0);
++  if (cs->owning_thread != 0 && cs->owning_thread != cur_thread) {
++    REXKRNL_WARN("RtlEnterCriticalSection contention owner={:#x} -> caller={:#x} (cs={:#x})",
++                 static_cast<u32>(cs->owning_thread), cur_thread, cs.GetGuestAddress());
++  }
+   cs->owning_thread = cur_thread;
+   cs->recursion_count = 1;
+ }
+@@ -479,12 +482,21 @@ u32 RtlTryEnterCriticalSection_entry(GuestPtrT<X_RTL_CRITICAL_SECTION> cs) {
+ }
+ 
+ void RtlLeaveCriticalSection_entry(GuestPtrT<X_RTL_CRITICAL_SECTION> cs) {
+-  REX_ASSERT(cs->owning_thread == KernelThread::GetCallingThread()->GetGuestObject());
+-
+-  REX_ASSERT(cs->recursion_count > 0);
++  u32 cur_thread = KernelThread::GetCallingThread()->GetGuestObject();
++  if (cs->recursion_count <= 0) {
++    REXKRNL_WARN(
++        "RtlLeaveCriticalSection count<=0: cs={:#x} owner={:#x} caller={:#x} rec={}",
++        cs.GetGuestAddress(), static_cast<u32>(cs->owning_thread), cur_thread,
++        static_cast<i32>(cs->recursion_count));
++    return;
++  }
++  if (cs->owning_thread != cur_thread) {
++    REXKRNL_WARN(
++        "RtlLeaveCriticalSection cross-thread leave: cs={:#x} owner={:#x} caller={:#x} rec={}",
++        cs.GetGuestAddress(), static_cast<u32>(cs->owning_thread), cur_thread,
++        static_cast<i32>(cs->recursion_count));
++  }
+   if (--cs->recursion_count != 0) {
+-    REX_ASSERT(cs->recursion_count >= 0);
+-
+     --LockCount(*cs);
+     return;
+   }
 diff --git a/src/kernel/xboxkrnl/xboxkrnl_video.cpp b/src/kernel/xboxkrnl/xboxkrnl_video.cpp
 index a8dcc2f..7df085b 100644
 --- a/src/kernel/xboxkrnl/xboxkrnl_video.cpp

@@ -52,6 +52,9 @@ hand; the patch is small and each hunk is documented in
 - `user_profile.cpp`: swallow filesystem exceptions when saving Xbox profile
   settings, which otherwise throw an uncaught exception and kill the guest when
   advancing past the main menu on Android.
+- `xboxkrnl_rtl.cpp`: warn instead of aborting (`REX_ASSERT`) on cross-thread
+  `RtlLeaveCriticalSection` / contended `RtlEnterCriticalSection` so guest
+  loading/streaming threads release locks cleanly instead of crashing.
 - **Custom renderer (Windows):** a Lanczos2 guest-output upscale shader
   (`host/shaders/bytecode/d3d12_5_1/guest_output_lanczos_ps.h`, source under
   `renderer/shaders/`) replaces bilinear upscaling. `presenter.h` adds

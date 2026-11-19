@@ -37,10 +37,13 @@ code:
   gamepad into the runtime's input system, so START advances from the title to
   the in-game main menu (NEW GAME / LOAD GAME / CREDITS). A/B/X/Y and both
   sticks (MOVE + LOOK) are wired the same way.
-- **Custom renderer upscale (Windows).** A Lanczos2 guest-output shader replaces
-  bilinear upscaling for a clear, sharp image. Toggle **live with no restart**
-  via the **F4 settings menu** (`gpu.xenos.present_upscale`) or the **F2**
-  hotkey. See [`docs/33-CUSTOM-RENDERER.md`](docs/33-CUSTOM-RENDERER.md).
+- **Custom D3D11 Xenos renderer (Windows, `v0.0.3-experimental`).** Replaces
+  the default Windows D3D12 backend with a standalone D3D11 Xenos renderer
+  (`renderer/`, `rexgpu-xenos-custom`) supporting **live, no-restart internal
+  resolution scaling** (`360p`–`2160p` or `50%–400%`, default `1080p`) via
+  **F1**, live **Lanczos / Bilinear** present filter toggle via **F2**, and full
+  live settings via **F4** (`gpu.custom.*`), with `--gpu.driver=d3d12` kept as a
+  runtime fallback. See [`docs/33-CUSTOM-RENDERER.md`](docs/33-CUSTOM-RENDERER.md).
 - **No game data in the APK.** The launcher asks you to import your own ISO;
   the XEX and full game tree are extracted at runtime into app-private storage.
   Nothing proprietary is committed or shipped.
@@ -173,6 +176,7 @@ after. Game data never leaves your device.
 | Path | Contents |
 |---|---|
 | `native/` | Windows host launcher: PPC context, HLE kernel, Xenos PM4, JNI bridge helpers |
+| `renderer/` | Standalone custom D3D11 Xenos renderer module (`rexgpu-xenos-custom`) with live resolution & filter control |
 | `recomp/` | Generated PPC→C++ output (generated files are gitignored) |
 | `android/` | Android Kotlin launcher (`app/src/main/java`), manifest, resources, Gradle build |
 | `tools/` | Host pipeline: ISO/XEX parsing, config generation, build orchestration |
@@ -210,6 +214,13 @@ Releases follow an **experimental** pre-1.0 scheme:
 
 - **`v0.0.1-experimental`** — First verified guest-rendered title screen on both
   Windows and Android. Source snapshot; binaries are built locally from source.
+- **`v0.0.2-experimental`** — Android dual-stick touch controls, Windows launcher
+  improvements, and live Lanczos2 present upscaling.
+- **`v0.0.3-experimental`** — Standalone custom D3D11 Xenos renderer for Windows
+  (`rexgpu-xenos-custom`) with live no-restart internal resolution scaling
+  (`360p`–`2160p`), async FIFO shader compilation + disk cache, fast texture
+  untiling, strict D3D11 binding/hazard fixes eliminating multipass flickering,
+  and kernel critical-section stability fix.
 
 See the [Releases page](../../releases) for notes.
 

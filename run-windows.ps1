@@ -31,7 +31,10 @@
 #>
 param(
     [string]$Resolution = '1280x720',
-    [ValidateRange(1, 8)][int]$Scale = 1,
+    [ValidateSet('360p', '720p', '900p', '1080p', '1440p', '2160p', 'scale')]
+    [string]$InternalResolution = '1080p',
+    [ValidateRange(0, 8)][int]$Scale = 0,
+    [ValidateSet('custom', 'd3d12')][string]$Driver = 'custom',
     [switch]$Fullscreen,
     [string]$GameRoot = 'C:\bs1game'
 )
@@ -59,10 +62,22 @@ if (-not (Test-Path -LiteralPath $GameRoot)) {
 
 $launchArgs = @(
     "--game_data_root=$GameRoot",
-    "--ui.resolution=$Resolution",
-    "--gpu.resolution_scale_x=$Scale",
-    "--gpu.resolution_scale_y=$Scale"
+    "--gpu.driver=$Driver",
+    "--ui.resolution=$Resolution"
 )
+if ($Driver -eq 'custom') {
+    if ($Scale -gt 0) {
+        $pct = [Math]::Clamp($Scale * 100, 50, 400)
+        $launchArgs += '--gpu.custom.internal_resolution=scale'
+        $launchArgs += "--gpu.custom.resolution_scale_pct=$pct"
+    } else {
+        $launchArgs += "--gpu.custom.internal_resolution=$InternalResolution"
+    }
+} else {
+    $d3d12Scale = if ($Scale -gt 0) { $Scale } else { 1 }
+    $launchArgs += "--gpu.resolution_scale_x=$d3d12Scale"
+    $launchArgs += "--gpu.resolution_scale_y=$d3d12Scale"
+}
 if ($Fullscreen) { $launchArgs += '--ui.fullscreen=true' }
 else { $launchArgs += '--ui.fullscreen=false' }
 

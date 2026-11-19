@@ -64,9 +64,43 @@ during testing). `python scripts/verify-all.py` -> 12/12 PASS.
 
 ## Honest scope
 
-This is a **present-stage custom upscale stage**, not a ground-up rewrite of the
-Xenos GPU backend. A full custom renderer like CoD3Recomp's (a ~500 KB D3D11
-backend with its own shader translator) is a much larger project and is not what
-ships here. The delivered change achieves the user-visible goals — a clear,
-sharp image and live in-game control of the upscale with no restart — using the
-existing ReXGlue D3D12 pipeline as the base.
+Note: this was the initial D3D12 present-stage upscale layer. It has now been
+superseded on Windows (`WIN32`) by a **complete custom D3D11 Xenos renderer
+module** (`rexgpu-xenos-custom` / `librexgpu-xenos-customd.dll`) under
+`renderer/src/`, providing true **live, no-restart internal resolution scaling**
+(`360p` -> `720p` -> `900p` -> `1080p` -> `1440p` -> `2160p`, or custom
+`50%-400%` scale) in addition to live `present_filter` (`lanczos` / `bilinear`),
+`anisotropy`, `msaa`, `fxaa`, `letterbox`, and `vsync`.
+
+## Standalone Custom D3D11 Xenos Backend (`renderer/src/`)
+
+- **Driver module:** `renderer/CMakeLists.txt` builds shared driver module
+  `rexgpu-xenos-custom` (`CustomXenosProvider : rex::IDriverModule`), wired into
+  `BioShock1App::OnConfigure` as the default Windows `gpu.driver` (`"custom"`),
+  with `--gpu.driver=d3d12` retained as a runtime fallback.
+- **Xenos -> HLSL 5.0 translator:** `xenos_hlsl.{h,cpp}` + `render_shaders.{h,cpp}`
+  translate guest Xenos microcode into HLSL 5.0 and compile/cache via `d3dcompiler_47.dll`.
+- **Live resolution control (`gpu.custom.*`):** `custom_settings.h` registers
+  `gpu.custom.internal_resolution` (`360p`, `720p`, `900p`, `1080p`, `1440p`,
+  `2160p`, `scale`; default `1080p`), `gpu.custom.resolution_scale_pct` (`50-400`),
+  `gpu.custom.present_filter`, `gpu.custom.anisotropy`, `gpu.custom.msaa`,
+  `gpu.custom.fxaa`, `gpu.custom.letterbox`, and `gpu.custom.vsync`.
+- **No-restart resize path:** `CustomXenosGraphicsDriver::ApplyLiveSettings` updates
+  `RenderResources` requested scale/MSAA before `RenderResources::BeginFrame`
+  rebuilds host color/depth render targets and resolved textures on the next frame
+  boundary with zero title restart.
+- **Controls & CLI:** **F1** cycles `360p -> 720p -> 1080p -> 1440p -> 2160p` live;
+  **F2** toggles `lanczos` / `bilinear` live; **F4** edits all `gpu.custom.*`
+  settings in the overlay; `.\run-windows.ps1` accepts `-InternalResolution`,
+  `-Scale`, and `-Driver custom|d3d12`.
+- **`v0.0.3-experimental` stability & performance fixes:**
+  - Async FIFO FXC shader compilation (`D3DCOMPILE_OPTIMIZATION_LEVEL0` +
+    synchronous disk-cache fast path + non-blocking 3D draw fallback) and fast
+    word-swapped texture untiling for smooth scene streaming.
+  - Strict D3D11 binding hygiene (`ForgetBindings()` explicitly unbinds RTVs,
+    PS/VS SRVs, PS, and GS; explicit bound flags; no mid-frame `EndPresent()`
+    state clobbering) fixing multipass depth-only / `discard` flickering.
+  - Xenos PM4/state fixes: indexed DMA `sourceSelect` bit shift `(initiator >> 6) & 3`,
+    `DepthClipEnable`, dual-face cull skip, `RB_STENCILREFMASK_BF`, `kD24FS8`
+    depth clear decode, `vfetch_mini` slot inheritance, `precise` VS position
+    invariance, and R<->B / channel-replication texture swizzles.
