@@ -652,30 +652,36 @@ bool Gles3Resources::BeginFrame(uint64_t frame) {
   // Periodically evict stale one-shot ring vertex buffers & unused textures so we never accumulate
   // thousands of Adreno kgsl mmap VMAs (Linux vm.max_map_count = 65530).
   if ((frame_ & 15u) == 0u && vertexBuffers_.size() > 128u) {
-    for (auto it = vertexBuffers_.begin(); it != vertexBuffers_.end();) {
+    uint32_t evicted = 0;
+    for (auto it = vertexBuffers_.begin(); it != vertexBuffers_.end() && evicted < 4u;) {
       if (frame_ > it->second.lastFrame + 45u) {
         if (it->second.ssbo) glDeleteBuffers(1, &it->second.ssbo);
         it = vertexBuffers_.erase(it);
+        ++evicted;
       } else {
         ++it;
       }
     }
   }
   if ((frame_ & 31u) == 0u && indexBuffers_.size() > 128u) {
-    for (auto it = indexBuffers_.begin(); it != indexBuffers_.end();) {
+    uint32_t evicted = 0;
+    for (auto it = indexBuffers_.begin(); it != indexBuffers_.end() && evicted < 4u;) {
       if (frame_ > it->second.lastFrame + 90u) {
         if (it->second.ebo) glDeleteBuffers(1, &it->second.ebo);
         it = indexBuffers_.erase(it);
+        ++evicted;
       } else {
         ++it;
       }
     }
   }
   if ((frame_ & 127u) == 0u && textures_.size() > 256u) {
-    for (auto it = textures_.begin(); it != textures_.end();) {
+    uint32_t evicted = 0;
+    for (auto it = textures_.begin(); it != textures_.end() && evicted < 4u;) {
       if (frame_ > it->second.lastFrame + 900u) {
         if (it->second.tex) glDeleteTextures(1, &it->second.tex);
         it = textures_.erase(it);
+        ++evicted;
       } else {
         ++it;
       }

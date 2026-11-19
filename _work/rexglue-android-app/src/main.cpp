@@ -121,7 +121,7 @@ class Bioshock1App : public rex::app::TitleApp {
   rex::AppSysRequirements GetRequirements() const override {
     rex::AppSysRequirements needs;
     needs.graphics_family = rex::GraphicsFamily::kXenos;
-    needs.audio = false;
+    needs.audio = true;
     needs.input = false;
     needs.ui = true;
     return needs;
@@ -185,9 +185,9 @@ int InitRuntime(const std::string& root, const std::string& driverMode,
   if (driver == "custom") {
     args.push_back("--gpu.custom.internal_resolution=" + resPreset);
     args.push_back("--gpu.custom.present_filter=" + upscale);
-    args.push_back("--gpu.custom.anisotropy=8");
+    args.push_back("--gpu.custom.anisotropy=4");
     args.push_back("--gpu.custom.letterbox=true");
-    args.push_back("--gpu.custom.vsync=true");
+    args.push_back("--gpu.custom.vsync=false");
   } else {
     args.push_back("--gpu.resolution_scale_x=" + std::to_string(scale));
     args.push_back("--gpu.resolution_scale_y=" + std::to_string(scale));
