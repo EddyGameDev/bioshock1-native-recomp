@@ -39,6 +39,33 @@ Next step: compare the stencil reference/mask (`0x00ffff00` → ref=0, read=0xFF
 and the destination-alpha content of the preceding pass against Xenia's trace, since
 the fog blend is driven by destination alpha and the overwrite is stencil-keyed.
 
+### 2026-11-19 follow-up: Bathysphere overlay largely diagnosed, not yet fixed
+
+With the user parked on the actual projector scene, one-shot diagnostics captured:
+
+- The covering passes use `bc0=0x07060706`. Verified against Xenia `xenos.h`
+  `BlendFactor`: 6 = `kSrcAlpha`, 7 = `kOneMinusSrcAlpha` (our `GlBlendFactor` mapping
+  is correct). So these are **source-alpha** blends, not destination-alpha.
+- There are **two** successive fullscreen passes with an identical signature
+  (`bc0=0x07060706`, `dc=0x00700772` = no stencil / depth-test LEQUAL / no depth write,
+  `colorControl=0x8700000c`, `colorInfo=0x00000000`):
+  1. `ps=ac33d4b4095218ec` — `fetches=0`, translated GLSL is a pure vertex-colour
+     pass-through (`vec4 r0 = v_o0; oC0 = max(r0, r0)`), with `oC0.w = 1`.
+  2. `ps=ab16fa44d9676bcf` — `fetches=1`, samples a 512×512 `fmt=2` guest texture.
+- Pixel readback immediately before pass (1) returned **alpha=255 across the whole
+  line** while RGB varied (9–69), so the source alpha of these passes is what makes
+  them opaque. The colour clear is `0x00000000` (alpha=0), so alpha=1 comes from the
+  PS/vertex path, not the clear.
+- A prototype that suppressed both matching passes compiled, deployed and was confirmed
+  to trigger (`CUTSCENE-FIX` fired for both shader hashes), but the screen **remained
+  brown** — meaning the remaining overlay comes from yet another pass with a different
+  blend signature. The prototype was **reverted** because it removed scene fog with no
+  visual benefit.
+
+Conclusion: the brown sheet is not a single depth-fog pass; it is a stack of Xenos
+fullscreen passes whose alpha handling differs from the hardware. Resolving it needs a
+frame-by-frame draw comparison against Xenia rather than another single-pass guess.
+
 ### Implemented: deferred scaled-resolve fast path (`v0.0.5.4` work)
 
 `RB_COPY_DEST_INFO::copy_dest_exp_bias` is bits 16–21 (confirmed against Xenia's

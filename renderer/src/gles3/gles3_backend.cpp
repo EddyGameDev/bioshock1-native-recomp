@@ -1002,10 +1002,12 @@ bool Gles3Backend::ExecuteDraw(const uint32_t* regs, uint32_t initiator, uint32_
       if (isSpot) loggedSpot = true;
       GLESLOG(
           "CUTSCENE-DIAG ps=%016llx vs=%016llx bc0=0x%08x dc=0x%08x stencil=0x%08x "
-          "stencilBF=0x%08x colorMask=0x%08x colorControl=0x%08x depthTex=%u colorCount=%u "
+          "stencilBF=0x%08x colorMask=0x%08x colorControl=0x%08x colorInfo=0x%08x "
+          "colorClear=0x%08x alphaRef=0x%08x depthTex=%u colorCount=%u "
           "hasStencil=%u depthTest=%u depthWrite=%u fetches=%zu",
           static_cast<unsigned long long>(ps->hash), static_cast<unsigned long long>(vs->hash),
           blendControls[0], depthControl, stencilRef, stencilRefBF, colorMask, colorControl,
+          colorInfos[0], regs[kRegCopyColorClear], regs[kRegAlphaReference],
           depthTex != 0 ? 1u : 0u, colorCount, (depthControl & 1u) != 0 ? 1u : 0u,
           (depthControl & 2u) != 0 ? 1u : 0u, (depthControl & 4u) != 0 ? 1u : 0u,
           ps->textureFetches.size());

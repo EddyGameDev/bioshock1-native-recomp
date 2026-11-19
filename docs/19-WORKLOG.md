@@ -27,6 +27,13 @@ Done:
     `glCopyImageSubData` due to `colorScale != 1.0`, no thermal throttling.
   - Implemented + measured consecutive-identical resolve dedup (`skip=0`, no effect).
   - Captured both suspect shaders' blend/depth/stencil/fetch state (see `10-STATUS.md`).
+  - **Bathysphere overlay deep-dive (with user on the projector scene):** dumped the
+    covering shader GLSL (pure vertex-colour pass-through, `oC0.w=1`), read back the
+    destination RGBA (alpha=255 with varying RGB), verified the Xenos blend-factor
+    enum against Xenia (`6=kSrcAlpha`, `7=kOneMinusSrcAlpha`), and found two stacked
+    fullscreen passes with identical blend/depth/alpha-test state. A prototype that
+    suppressed both was deployed and confirmed to trigger but did **not** remove the
+    brown sheet, so it was reverted; the remaining overlay comes from another pass.
   - **Implemented deferred scaled-resolve fast path:** verified `copy_dest_exp_bias`
     layout against Xenia `registers.h`; added `expBias`/`clampMode` to
     `Gles3Resources::Resolved`; `ExecuteResolve` now uses `glCopyImageSubData` for
