@@ -932,9 +932,10 @@ bool Gles3Backend::ExecuteDraw(const uint32_t* regs, uint32_t initiator, uint32_
           swizzle = unswapped;
         }
         const uint32_t texFmt = words[1] & 0x3Fu;
-        const bool repRRRR = (texFmt == 2u || texFmt == 8u || texFmt == 9u || texFmt == 22u ||
-                              texFmt == 23u || texFmt == 24u || texFmt == 27u || texFmt == 30u ||
-                              texFmt == 36u || texFmt == 58u || texFmt == 59u);
+        const bool repRRRR = (rSurf && rSurf->isDepth) || texFmt == 2u || texFmt == 8u ||
+                              texFmt == 9u || texFmt == 22u || texFmt == 23u || texFmt == 24u ||
+                              texFmt == 27u || texFmt == 30u || texFmt == 36u || texFmt == 46u ||
+                              texFmt == 47u || texFmt == 58u || texFmt == 59u;
         const bool repRGGG = (texFmt == 10u || texFmt == 25u || texFmt == 28u || texFmt == 31u ||
                               texFmt == 37u || texFmt == 49u);
         if (repRRRR || repRGGG) {

@@ -370,6 +370,27 @@ size_t LinearizeLevel(const uint8_t* src, size_t maxBytes, const GlTexFmt& fmt, 
   else if (fmt.blockBytes == 8u) bppLog2 = 3u;
   else if (fmt.blockBytes == 16u) bppLog2 = 4u;
 
+  // Fast path: untiled, non-expanded, no-endian-swap (e.g. 1280x720 Bink video Y/Cr/Cb planes).
+  // Uses row memcpy instead of a 921,600-iteration per-pixel scalar loop!
+  if (!tiled && !expand32 && !fmt.expand16ToFloat && (fmt.blockBytes == 1u || endian == 0u)) {
+    const size_t srcStride = static_cast<size_t>(pitchTexels) * fmt.blockBytes;
+    const size_t srcXOff = static_cast<size_t>(x0) * fmt.blockBytes;
+    for (uint32_t y = 0; y < height; ++y) {
+      const size_t rowSrcOff = static_cast<size_t>(y + y0) * srcStride + srcXOff;
+      uint8_t* rowDst = dst + static_cast<size_t>(y) * rowBytes;
+      if (rowSrcOff + rowBytes <= maxBytes) {
+        std::memcpy(rowDst, src + rowSrcOff, rowBytes);
+      } else if (rowSrcOff < maxBytes) {
+        const size_t avail = maxBytes - rowSrcOff;
+        std::memcpy(rowDst, src + rowSrcOff, avail);
+        std::memset(rowDst + avail, 0, rowBytes - avail);
+      } else {
+        std::memset(rowDst, 0, rowBytes);
+      }
+    }
+    return totalBytes;
+  }
+
   for (uint32_t y = 0; y < height; ++y) {
     uint8_t* rowDst = dst + static_cast<size_t>(y) * rowBytes;
     for (uint32_t x = 0; x < width; ++x) {
