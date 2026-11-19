@@ -40,6 +40,14 @@ Done:
     YUV->RGB math, and its BT.601 pixel constants including alpha=1 — all correct.
     A multiplicative-spotlight suppression prototype was reverted because automated
     navigation loaded a newer autosave past the scene before it could be evaluated.
+  - **Xenia shader dump comparison:** copied the user's working Xenia install to
+    `_work/xenia-canary-windows`, enabled `dump_shaders`, backed up its shader cache,
+    had the user replay the projector scene, captured 806 dumps in
+    `_work/xenia-shaderdump`. Re-implemented our `HashWords` over the dumped microcode
+    to map all four suspect GLES shaders to their Xenia ucode and confirmed every one
+    translates correctly (movie YUV math, fullscreen passes, spotlight). Xenia's release
+    binary cannot emit GPU traces (streaming and F4 both blocked), so shader
+    translation is ruled out and the remaining fault is in per-frame state/input data.
   - **Implemented deferred scaled-resolve fast path:** verified `copy_dest_exp_bias`
     layout against Xenia `registers.h`; added `expBias`/`clampMode` to
     `Gles3Resources::Resolved`; `ExecuteResolve` now uses `glCopyImageSubData` for

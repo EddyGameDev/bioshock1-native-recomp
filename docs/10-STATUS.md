@@ -94,6 +94,36 @@ spotlight pass. The remaining candidates are the resolved movie texture's path i
 3D projector quad (no fetch of a 1280x720 colour resolve was observed in the scene) or
 the compositing order of the bathysphere background.
 
+### Xenia shader dump comparison (2026-11-19)
+
+Copied the user's Xenia Canary install into `_work/xenia-canary-windows` (with saves,
+config and `xenia.log`) and enabled its `dump_shaders` option. After the user replayed
+the projector scene, 806 shader dumps were written to `_work/xenia-shaderdump`.
+
+By re-implementing `Gles3Shaders::HashWords` (FNV with seed
+`0x6142681be8a800f1` for translator tag `v3-deferred-resolve-clamp`) over each dumped
+`.ucode.bin` file, every suspect GLES shader was mapped to its Xenia ucode:
+
+| GLES hash | Role | Xenia dump |
+|---|---|---|
+| `7c4ba4eecf8393e0` | Bink YUV→RGB movie | `shader_98587DA49B1A05A4` |
+| `ac33d4b4095218ec` | fullscreen vertex-colour pass | `shader_2E372EA28CC404B7` |
+| `ab16fa44d9676bcf` | fullscreen textured pass | `shader_FA282553060F038E` |
+| `e1ff0bc5a7c8ff2c` | deferred spotlight | `shader_232F7598AED463AF` |
+
+Comparing the readable ucode with our translated GLSL shows **all four translate
+correctly** — including the movie shader's `tfetch2D`×3 + `dp3`/`cndeq`/`dp4` YUV math
+and the fullscreen passes' `max`/`mul`/`rcp`/`mad` sequences. The vertex-colour pass is
+literally `max oC0, r0, r0` in both. Its colour comes from a `vfetch_mini r0, Offset=4`
+of `FMT_32_32_32_32_FLOAT` in the VS (`shader_612A9A5369E002DA`), which our translator
+also handles (format 38, inherited slot/stride, DWORD offset).
+
+Xenia's release binary has **no GPU trace support** (both `trace_gpu_stream` and F4 log
+"GPU trace capture isn't built into this configuration"), so a draw-list diff is not
+possible with this binary. With shaders now ruled out, the remaining difference lies in
+per-frame state or input data — most likely the vertex colour buffer for the fullscreen
+pass or the resolved-movie sampling path. Shader translation is no longer suspect.
+
 ### Implemented: deferred scaled-resolve fast path (`v0.0.5.4` work)
 
 `RB_COPY_DEST_INFO::copy_dest_exp_bias` is bits 16–21 (confirmed against Xenia's
