@@ -32,9 +32,24 @@ vertex-buffer texture samplers aliasing the PS sampler units; see the v6 fix abo
 buffer made `textureSize()` return 65536, so the shader's `vbLen` clamp no longer matched
 the real vertex data. Reverted to exactly-sized buffers, but kept the Mali crash fix by
 allocating a **fresh buffer object** whenever the size changes (never resizing a buffer
-still attached to a texture buffer). Verified on device: title screen, cinematics and
-loading screen render correctly with no crash and no explosions. Loading is guest-side
-(`exec≈2.8s/10s`, GPU mostly idle), not a renderer stall.
+still attached to a texture buffer). Verified on device: title screen and cinematics render
+correctly with no crash and no explosions.
+
+## ⚠️ KNOWN BLOCKER (Mali): does not get past the loading screen
+
+**On Mali (SM-G998B / Mali-G78) the game never gets past the loading screen into gameplay.**
+Confirmed on device 2026-11-20: the title screen, main menu and intro cinematics render, but
+starting a new game parks on the BioShock loading UI indefinitely — `VdSwap` keeps advancing
+(~30 FPS, 97k+ swaps) and the guest stays CPU-saturated (`exec≈10s/10s`), so it is actively
+working, not deadlocked, yet the level never finishes loading and gameplay is never reached.
+
+The centre loading video **flickers between the video frames and the dark "BIOSHOCK" logo
+card** (alternating detailed and near-uniform frames every 250–500 ms). The `LOADING...`
+text itself is pixel-static. No GL/shader errors are present. Root cause is unknown —
+it is likely guest-side asset loading (possibly the CPU DXT fallback, since Mali reports
+`s3tc=0`) rather than a renderer stall. This is why the release asks players to submit logs.
+
+Cutscene bug (Bathysphere projector) remains parked and is a separate issue.
 
 **Launcher log export:** the launcher now has an `EXPORT LOGS` button that writes a
 timestamped text file (device info + native renderer log + filtered logcat) to the app's

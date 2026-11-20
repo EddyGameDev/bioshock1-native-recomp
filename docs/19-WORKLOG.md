@@ -6,6 +6,33 @@ holds the current snapshot; this file holds the history.
 
 ---
 
+## Session 23 — 2026-11-20 — Mali stuck-on-loading-screen documented
+
+- Device testing confirmed Mali (SM-G998B / Mali-G78) **does not get past the loading
+  screen** after starting a new game. Title/menu/cinematics render fine; the loading UI
+  cycles videos but the level never finishes and gameplay is never reached.
+- `PERF(10s)` on the loading screen: `exec≈10s/10s` (guest CPU-saturated, actively working),
+  `VdSwap` advancing (~30 FPS / 97k+ swaps), no GL/shader errors — not a renderer stall,
+  not a deadlock. Hypothesised guest-side asset load (CPU DXT fallback, since `s3tc=0`).
+- Centre loading video flickers between video frames and the dark "BIOSHOCK" logo card
+  (alternating detailed/near-uniform frames every 250–500 ms); `LOADING...` text is static.
+- Added a prominent "KNOWN BLOCKER (Mali): does not get past the loading screen" section to
+  `10-STATUS.md` and to the GitHub release notes, per user request.
+- Fix from Session 22 (fresh texture-buffer objects on resize, no more fixed 256 KB buffer)
+  remains: no crash, no vertex explosions.
+
+---
+
+## Session 22 — 2026-11-20 — Vertex-explosion fix + logs-request release
+
+- Reverted fixed 256 KB texture buffer (broke shader `vbLen` clamp -> giant triangles);
+  kept Mali SIGSEGV fix via fresh buffer object on every size change. Verified title and
+  cinematics clean. Committed `5bb110d`.
+- Published GitHub release `v0.0.6-mali-fix-experimental` — "Player Logs Requested" — with
+  EXPORT LOGS instructions and the refreshed APK.
+
+---
+
 ## Session 21 — 2026-11-20 — Log export + Mali crash hardening
 
 - Added `EXPORT LOGS` button to the launcher (layout, FileProvider, share intent with
