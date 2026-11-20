@@ -6,6 +6,15 @@ holds the current snapshot; this file holds the history.
 
 ---
 
+## Session 25 — 2026-11-20 — v0.0.6.4 Mali Hotfix release
+
+- User confirmed the game reaches controllable gameplay with no major visual issues.
+- Published GitHub release `v0.0.6.4-mali-hotfix-experimental` with the hotfix APK.
+- Documented remaining issues for v0.0.6.5: no skybox, low FPS/performance (GPU-bound).
+- Bathysphere projector cutscene bug remains parked.
+
+---
+
 ## Session 23/24 — 2026-11-20 — Loading-screen "blocker" retracted
 
 - **Retraction:** the earlier "Mali never gets past the loading screen" conclusion was wrong.

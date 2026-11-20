@@ -1,6 +1,18 @@
 # Status — verified facts, not aspirations
 
-Last updated: 2026-11-20 (`v0.0.6-mali-fix-experimental` — Mali-G78 support fixed; Adreno/Windows unchanged).
+Last updated: 2026-11-20 (`v0.0.6.4-mali-hotfix-experimental` — Mali-G78 playable; Adreno/Windows unchanged).
+
+## `v0.0.6.4-mali-hotfix-experimental` — current release
+
+Published as a GitHub release. Mali boots through the intro into controllable gameplay with
+no major visual issues. Includes the Mali portability fixes, the vertex-explosion fix, the
+CPU DXT decoder correctness fixes, and the launcher EXPORT LOGS button.
+
+**Known issues (targeted for v0.0.6.5):**
+- **No skybox** — the sky/background is missing in-game.
+- **Low FPS / performance** — GPU-bound (~22–30 FPS on tested hardware); performance work
+  is the next version.
+- Bathysphere projector cutscene bug remains parked (separate issue).
 
 ## `v0.0.6-mali-fix-experimental` — Mali-G78 support (FIXED)
 
