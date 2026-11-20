@@ -6,8 +6,9 @@
 #include <fstream>
 #include <sstream>
 
-#define GLESLOG(...) __android_log_print(ANDROID_LOG_INFO, "BS1-GLES3", __VA_ARGS__)
-#define GLESERR(...) __android_log_print(ANDROID_LOG_ERROR, "BS1-GLES3", __VA_ARGS__)
+#include "bs1_filelog.h"
+#define GLESLOG(...) BS1_GLES_LOG_IMPL(ANDROID_LOG_INFO, __VA_ARGS__)
+#define GLESERR(...) BS1_GLES_LOG_IMPL(ANDROID_LOG_ERROR, __VA_ARGS__)
 
 namespace bs1::renderer::gles3 {
 

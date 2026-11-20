@@ -26,6 +26,7 @@ object NativeBridge {
     external fun nativeSetInternalResolution(preset: String): Boolean
     external fun nativeSetUpscaleMode(upscaleMode: String): Boolean
     external fun nativeGetPresentCount(): Long
+    external fun nativeSetLogFile(path: String)
     external fun nativeShutdown()
     external fun nativeResize(width: Int, height: Int)
     external fun nativeRender()

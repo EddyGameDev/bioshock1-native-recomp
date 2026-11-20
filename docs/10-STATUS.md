@@ -28,6 +28,18 @@ Fixes shipped in this build:
 **Resolved.** The earlier "textured content missing" symptom was caused by the
 vertex-buffer texture samplers aliasing the PS sampler units; see the v6 fix above.
 
+**Known regression (Mali, 2026-11-20):** after hardening the texture-buffer path with a
+fixed 256 KB buffer (to stop a Mali driver crash in `gles_texturep_prepare_texture_buffers`
+when the attached buffer was resized), in-game geometry shows "vertex explosions" —
+large, brightly-coloured triangles. Title/menu render fine. The crash fix is kept because
+it prevents a hard SIGSEGV; the geometry corruption is still under investigation.
+
+**Launcher log export:** the launcher now has an `EXPORT LOGS` button that writes a
+timestamped text file (device info + native renderer log + filtered logcat) to the app's
+external files and opens the system share sheet (Discord is a valid target). Native log
+lines are mirrored to `bs1-runtime.log` via the `BS1_LOG_FILE` environment variable, set
+by JNI, because third-party apps cannot read logcat on Android.
+
 ## On-device diagnosis (2026-11-19, SM-A366B / Adreno 710, 540p): 22–26 FPS in Rapture
 
 A live ADB session loaded the `CONTINUE` save straight into the Bathysphere/Rapture

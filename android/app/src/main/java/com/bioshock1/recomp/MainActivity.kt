@@ -19,11 +19,15 @@ import android.widget.FrameLayout
 import android.widget.LinearLayout
 import android.widget.TextView
 import android.widget.Toast
+import androidx.core.content.FileProvider
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 
 class MainActivity : Activity() {
     private lateinit var launcherPanel: View
@@ -35,6 +39,7 @@ class MainActivity : Activity() {
     private lateinit var upscaleButton: Button
     private lateinit var fxaaButton: Button
     private lateinit var perfButton: Button
+    private lateinit var exportLogsButton: Button
     private lateinit var container: FrameLayout
     private var surface: GameSurfaceView? = null
     private var touchOverlay: TouchControlsView? = null
@@ -97,6 +102,7 @@ class MainActivity : Activity() {
         upscaleButton = findViewById(R.id.upscaleButton)
         fxaaButton = findViewById(R.id.fxaaButton)
         perfButton = findViewById(R.id.perfButton)
+        exportLogsButton = findViewById(R.id.exportLogsButton)
         container = findViewById(R.id.surfaceContainer)
 
         driverMode = prefs.getString("driver_mode", "custom") ?: "custom"
@@ -145,11 +151,82 @@ class MainActivity : Activity() {
 
         importButton.setOnClickListener { openDocument() }
         startButton.setOnClickListener { startGame() }
+        exportLogsButton.setOnClickListener { exportLogs() }
         updateSettingButtons()
         updateStatus()
 
         if (intent?.getBooleanExtra("autostart", false) == true) {
             container.post { startGame() }
+        }
+    }
+
+    /** Capture the app's logcat and share it as a text file (for Discord bug reports). */
+    private fun exportLogs() {
+        exportLogsButton.isEnabled = false
+        exportLogsButton.text = "EXPORTING..."
+        CoroutineScope(Dispatchers.IO).launch {
+            val stamp = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(Date())
+            val file = File(getExternalFilesDir(null), "bioshock1_logs_$stamp.txt")
+            try {
+                val version = try {
+                    packageManager.getPackageInfo(packageName, 0).versionName
+                } catch (_: Exception) {
+                    "unknown"
+                }
+                file.writeText(
+                    "BioShock 1 Native ReComp - diagnostic logs\n" +
+                        "Version: $version\n" +
+                        "Device: ${Build.MANUFACTURER} ${Build.MODEL} (${Build.DEVICE})\n" +
+                        "Android: ${Build.VERSION.RELEASE} (API ${Build.VERSION.SDK_INT})\n" +
+                        "GPU: ${Build.SUPPORTED_ABIS.joinToString(", ")}\n" +
+                        "Time: $stamp\n\n"
+                )
+                val proc = Runtime.getRuntime().exec(
+                    arrayOf(
+                        "logcat", "-d", "-v", "threadtime", "-s",
+                        "BS1-GLES3:I", "BS1-JNI:I", "BS1-VDSWAP:I", "BS1-MSGBOX:E", "BS1-UI:I",
+                        "AndroidRuntime:E", "DEBUG:E", "libc:E", "crash_dump64:E", "tombstoned:I"
+                    )
+                )
+                proc.inputStream.bufferedReader(Charsets.UTF_8).useLines { lines ->
+                    file.appendText(lines.joinToString("\n"))
+                }
+                proc.errorStream.bufferedReader(Charsets.UTF_8).useLines { lines ->
+                    val err = lines.joinToString("\n").trim()
+                    if (err.isNotEmpty()) file.appendText("\n[logcat stderr]\n$err\n")
+                }
+                proc.waitFor()
+                val runtimeLog = File(getExternalFilesDir(null), "bs1-runtime.log")
+                if (runtimeLog.exists()) {
+                    val contents = runtimeLog.readText().trim()
+                    if (contents.isNotEmpty()) {
+                        file.appendText("\n=== Native renderer log ===\n$contents\n")
+                    }
+                }
+            } catch (e: Exception) {
+                file.appendText("\n[export failed] ${e.message}\n")
+            }
+            withContext(Dispatchers.Main) {
+                exportLogsButton.isEnabled = true
+                exportLogsButton.text = "EXPORT LOGS"
+                try {
+                    val uri = FileProvider.getUriForFile(
+                        this@MainActivity, "${packageName}.fileprovider", file
+                    )
+                    val share = Intent(Intent.ACTION_SEND).apply {
+                        type = "text/plain"
+                        putExtra(Intent.EXTRA_STREAM, uri)
+                        putExtra(Intent.EXTRA_SUBJECT, "BioShock 1 logs ($stamp)")
+                        clipData = android.content.ClipData.newUri(contentResolver, "logs", uri)
+                        addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                    }
+                    startActivity(Intent.createChooser(share, "Share logs"))
+                } catch (e: Exception) {
+                    Toast.makeText(
+                        this@MainActivity, "Share failed: ${e.message}", Toast.LENGTH_LONG
+                    ).show()
+                }
+            }
         }
     }
 
@@ -287,6 +364,10 @@ class MainActivity : Activity() {
             Toast.makeText(this, "Import the ISO first", Toast.LENGTH_SHORT).show()
             return
         }
+        // Mirror renderer logs to a file so EXPORT LOGS works without logcat access.
+        val runtimeLog = File(getExternalFilesDir(null), "bs1-runtime.log")
+        runtimeLog.writeText("")
+        NativeBridge.nativeSetLogFile(runtimeLog.absolutePath)
         surface = GameSurfaceView(this, null).apply {
             setGameRoot(gameDir.absolutePath)
             setRenderConfig(driverMode, internalRes, vkScale, upscaleMode, fxaaEnabled, perfModeEnabled)

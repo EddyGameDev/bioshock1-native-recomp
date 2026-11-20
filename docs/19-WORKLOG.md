@@ -6,6 +6,21 @@ holds the current snapshot; this file holds the history.
 
 ---
 
+## Session 21 — 2026-11-20 — Log export + Mali crash hardening
+
+- Added `EXPORT LOGS` button to the launcher (layout, FileProvider, share intent with
+  `setClipData` so the share sheet/Discord can read the file).
+- Third-party apps cannot read logcat, so native renderer logs are mirrored to
+  `bs1-runtime.log` (set via JNI `nativeSetLogFile` -> `BS1_LOG_FILE` env var, read by the
+  GLES3 log macros). Verified: exported file contains 95 lines of real renderer logs.
+- Release build marked `debuggable true` (experimental) — no longer needed for logs, but
+  kept for diagnostics.
+- Hardened Mali texture-buffer path with a fixed 256 KB buffer to stop a driver SIGSEGV
+  (`gles_texturep_prepare_texture_buffers`). Crash gone, but in-game geometry now shows
+  vertex explosions — documented as a known regression, still being investigated.
+
+---
+
 ## Session 20 — 2026-11-20 — Mali-G78 portability pass (partial)
 
 Device: SM-G998B / Mali-G78 / GLES 3.2 / Android 15. Reported symptom: audio only, no visuals.

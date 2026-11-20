@@ -6,8 +6,9 @@
 #include <cmath>
 #include <cstring>
 
-#define GLESLOG(...) __android_log_print(ANDROID_LOG_INFO, "BS1-GLES3", __VA_ARGS__)
-#define GLESERR(...) __android_log_print(ANDROID_LOG_ERROR, "BS1-GLES3", __VA_ARGS__)
+#include "bs1_filelog.h"
+#define GLESLOG(...) BS1_GLES_LOG_IMPL(ANDROID_LOG_INFO, __VA_ARGS__)
+#define GLESERR(...) BS1_GLES_LOG_IMPL(ANDROID_LOG_ERROR, __VA_ARGS__)
 
 namespace {
 std::atomic<uint64_t> g_android_custom_present_count{0};
@@ -1056,28 +1057,23 @@ bool Gles3Backend::ExecuteDraw(const uint32_t* regs, uint32_t initiator, uint32_
       if (!tex) glGenTextures(1, &tex);
       GLuint& storage = vbTexStorage_[vf.binding];
       if (!storage) glGenBuffers(1, &storage);
-      if (boundVbTexBuf_[vf.binding] != ssbo || boundVbTexOff_[vf.binding] != vbOff ||
-          boundVbTexSize_[vf.binding] != vbRange) {
-        // glTexBufferRange has strict offset/size alignment; copy the exact range
-        // into a dedicated buffer and use glTexBuffer instead.
-        const GLsizei sz = static_cast<GLsizei>(vbRange);
-        // Mali rejects glCopyBufferSubData from the persistently-mapped SSBO ring,
-        // and GLES has no glGetBufferSubData, so upload from the guest source pointer.
-        const uint8_t* src = resources_.PhysicalPtr((w0 & ~3u) & 0x1FFFFFFFu, vbRange);
+      if (vbTexStorageSize_[vf.binding] == 0) {
+        // Allocate once and never reallocate: Mali's driver crashes when a
+        // buffer attached to a texture buffer is resized while still bound.
+        constexpr GLsizei kFixedVbTexBytes = 256 * 1024;
         glBindBuffer(GL_TEXTURE_BUFFER, storage);
-        if (vbTexStorageSize_[vf.binding] != sz) {
-          glBufferData(GL_TEXTURE_BUFFER, sz, nullptr, GL_STREAM_DRAW);
-          vbTexStorageSize_[vf.binding] = sz;
-        }
-        if (src) {
-          glBufferSubData(GL_TEXTURE_BUFFER, 0, static_cast<GLsizeiptr>(vbRange), src);
-        }
+        glBufferData(GL_TEXTURE_BUFFER, kFixedVbTexBytes, nullptr, GL_STREAM_DRAW);
+        vbTexStorageSize_[vf.binding] = kFixedVbTexBytes;
         glActiveTexture(GL_TEXTURE0 + vf.binding + 16u);
         glBindTexture(GL_TEXTURE_BUFFER, tex);
         glTexBuffer(GL_TEXTURE_BUFFER, GL_R32UI, storage);
-        boundVbTexBuf_[vf.binding] = ssbo;
-        boundVbTexOff_[vf.binding] = vbOff;
-        boundVbTexSize_[vf.binding] = vbRange;
+      }
+      if (vbRange > 0 && vbRange <= static_cast<size_t>(vbTexStorageSize_[vf.binding])) {
+        const uint8_t* src = resources_.PhysicalPtr((w0 & ~3u) & 0x1FFFFFFFu, vbRange);
+        glBindBuffer(GL_TEXTURE_BUFFER, storage);
+        if (src) {
+          glBufferSubData(GL_TEXTURE_BUFFER, 0, static_cast<GLsizeiptr>(vbRange), src);
+        }
       }
       continue;
     }

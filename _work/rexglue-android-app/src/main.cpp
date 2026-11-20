@@ -30,6 +30,7 @@
 #include <string_view>
 #include <vector>
 #include <android/log.h>
+#include <cstdlib>
 #define AJLOG(...) __android_log_print(ANDROID_LOG_INFO, "BS1-JNI", __VA_ARGS__)
 
 #include "generated/default/bioshock1_init.h"
@@ -311,6 +312,17 @@ Java_com_bioshock1_recomp_NativeBridge_nativeSetUpscaleMode(JNIEnv* env, jclass,
                                     "gpu.xenos.present_upscale", mode);
   AJLOG("live vulkan present_upscale -> %s (%s)", mode.c_str(), res ? "ok" : "err");
   return res ? JNI_TRUE : JNI_FALSE;
+}
+
+// Export LOGS: tell all renderer modules where to mirror their log lines.
+JNIEXPORT void JNICALL
+Java_com_bioshock1_recomp_NativeBridge_nativeSetLogFile(JNIEnv* env, jclass, jstring path) {
+  if (!path) return;
+  const char* chars = env->GetStringUTFChars(path, nullptr);
+  if (chars) {
+    setenv("BS1_LOG_FILE", chars, 1);
+    env->ReleaseStringUTFChars(path, chars);
+  }
 }
 
 JNIEXPORT jlong JNICALL
