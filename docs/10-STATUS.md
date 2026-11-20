@@ -28,11 +28,13 @@ Fixes shipped in this build:
 **Resolved.** The earlier "textured content missing" symptom was caused by the
 vertex-buffer texture samplers aliasing the PS sampler units; see the v6 fix above.
 
-**Known regression (Mali, 2026-11-20):** after hardening the texture-buffer path with a
-fixed 256 KB buffer (to stop a Mali driver crash in `gles_texturep_prepare_texture_buffers`
-when the attached buffer was resized), in-game geometry shows "vertex explosions" —
-large, brightly-coloured triangles. Title/menu render fine. The crash fix is kept because
-it prevents a hard SIGSEGV; the geometry corruption is still under investigation.
+**Vertex-explosion regression resolved (Mali, 2026-11-20):** the fixed 256 KB texture
+buffer made `textureSize()` return 65536, so the shader's `vbLen` clamp no longer matched
+the real vertex data. Reverted to exactly-sized buffers, but kept the Mali crash fix by
+allocating a **fresh buffer object** whenever the size changes (never resizing a buffer
+still attached to a texture buffer). Verified on device: title screen, cinematics and
+loading screen render correctly with no crash and no explosions. Loading is guest-side
+(`exec≈2.8s/10s`, GPU mostly idle), not a renderer stall.
 
 **Launcher log export:** the launcher now has an `EXPORT LOGS` button that writes a
 timestamped text file (device info + native renderer log + filtered logcat) to the app's

@@ -1053,27 +1053,29 @@ bool Gles3Backend::ExecuteDraw(const uint32_t* regs, uint32_t initiator, uint32_
     if (!ssbo) return false;
     if (XenosGlsl::VertexTextureBuffers()) {
       if (vf.binding >= 16u) return false;
+      if (vbRange == 0) return false;
       GLuint& tex = vbTex_[vf.binding];
       if (!tex) glGenTextures(1, &tex);
       GLuint& storage = vbTexStorage_[vf.binding];
-      if (!storage) glGenBuffers(1, &storage);
-      if (vbTexStorageSize_[vf.binding] == 0) {
-        // Allocate once and never reallocate: Mali's driver crashes when a
-        // buffer attached to a texture buffer is resized while still bound.
-        constexpr GLsizei kFixedVbTexBytes = 256 * 1024;
+      const GLsizei sz = static_cast<GLsizei>(vbRange);
+      if (storage == 0 || vbTexStorageSize_[vf.binding] != sz) {
+        // Never resize a buffer that is attached to a texture buffer — Mali's
+        // driver crashes in gles_texturep_prepare_texture_buffers when that
+        // happens. Use a fresh buffer object each time the size changes.
+        GLuint old = storage;
+        glGenBuffers(1, &storage);
         glBindBuffer(GL_TEXTURE_BUFFER, storage);
-        glBufferData(GL_TEXTURE_BUFFER, kFixedVbTexBytes, nullptr, GL_STREAM_DRAW);
-        vbTexStorageSize_[vf.binding] = kFixedVbTexBytes;
+        glBufferData(GL_TEXTURE_BUFFER, sz, nullptr, GL_STREAM_DRAW);
+        vbTexStorageSize_[vf.binding] = sz;
         glActiveTexture(GL_TEXTURE0 + vf.binding + 16u);
         glBindTexture(GL_TEXTURE_BUFFER, tex);
         glTexBuffer(GL_TEXTURE_BUFFER, GL_R32UI, storage);
+        if (old) glDeleteBuffers(1, &old);
       }
-      if (vbRange > 0 && vbRange <= static_cast<size_t>(vbTexStorageSize_[vf.binding])) {
-        const uint8_t* src = resources_.PhysicalPtr((w0 & ~3u) & 0x1FFFFFFFu, vbRange);
-        glBindBuffer(GL_TEXTURE_BUFFER, storage);
-        if (src) {
-          glBufferSubData(GL_TEXTURE_BUFFER, 0, static_cast<GLsizeiptr>(vbRange), src);
-        }
+      const uint8_t* src = resources_.PhysicalPtr((w0 & ~3u) & 0x1FFFFFFFu, vbRange);
+      glBindBuffer(GL_TEXTURE_BUFFER, storage);
+      if (src) {
+        glBufferSubData(GL_TEXTURE_BUFFER, 0, static_cast<GLsizeiptr>(vbRange), src);
       }
       continue;
     }
