@@ -6,6 +6,25 @@ holds the current snapshot; this file holds the history.
 
 ---
 
+## Session 20 — 2026-11-20 — Mali-G78 portability pass (partial)
+
+Device: SM-G998B / Mali-G78 / GLES 3.2 / Android 15. Reported symptom: audio only, no visuals.
+
+- Found two hard failures in logcat: `CompileShader(VS_...) failed: S0001: Function call
+  discards 'readonly' access qualifier` and
+  `LinkProgram(...) failed: vertex shader storage blocks (1) > maximum allowed (0)`.
+- Fixed shader compilation by staging readonly SSBO elements into locals (translator v4).
+- Added automatic texture-buffer fallback for VS vertex fetch when
+  `GL_MAX_VERTEX_SHADER_STORAGE_BLOCKS == 0` (translator v5): `usamplerBuffer` + `texelFetch`
+  with `GL_R32UI`; backend uploads guest vertex bytes to a dedicated GL_TEXTURE_BUFFER.
+  `glTexBufferRange` and `glCopyBufferSubData` both fail on Mali, so a plain buffer + CPU
+  source pointer is used.
+- Added CPU DXT1/3/5 -> RGBA8 decoder for `hasS3tc == false` (untested in practice).
+- Result: shaders compile and link cleanly, game reaches the title menu with audio, but
+  textured content still does not render. Documented as `v0.0.6-mali-wip`, not a finished fix.
+
+---
+
 ## Session 19 — 2026-11-19 — On-device 540p perf & cutscene shader-state capture (ADB)
 
 **Goal:** reproduce the reported 22 FPS drop in Rapture, identify the GPU bottleneck,

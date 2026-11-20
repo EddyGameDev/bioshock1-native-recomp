@@ -1,6 +1,29 @@
 # Status — verified facts, not aspirations
 
-Last updated: 2026-11-19 (`v0.0.5.3-experimental` — playable in-game on Android & Windows with custom D3D11/GLES3.2 renderers, ahead-of-time shader pre-warming, surviving audio across transitions, full Xbox 360 touch controls, and working Save/Load).
+Last updated: 2026-11-20 (`v0.0.6-mali-wip` — Adreno/Windows unchanged; Mali GPU support is **partial**, see below).
+
+## `v0.0.6-mali-wip` — Mali-G78 support (IN PROGRESS, NOT A FIX YET)
+
+Test device: SM-G998B (Exynos 2100, Mali-G78, GLES 3.2, Android 15).
+
+Fixes shipped in this build:
+- **Vertex shader compile errors**: Mali rejects passing `readonly` SSBO elements to helper
+  functions (`S0001: Function call discards 'readonly' access qualifier`). The translator now
+  stages `.length()` and each loaded word into plain locals before calling `bswap()` etc.
+- **Vertex SSBOs unsupported**: Mali reports `GL_MAX_VERTEX_SHADER_STORAGE_BLOCKS = 0`, so
+  program link failed with "number of vertex shader storage blocks (1) is greater than the
+  maximum allowed (0)". Added a texture-buffer fallback (`usamplerBuffer` + `texelFetch`) that
+  activates automatically when that limit is 0. Vertex data is uploaded into a dedicated
+  `GL_TEXTURE_BUFFER` from the guest pointer (`glCopyBufferSubData` and `glTexBufferRange`
+  both fail on Mali's persistently-mapped ring).
+- **CPU DXT1/3/5 decoder** added for GPUs without S3TC (`s3tc=0` on Mali), transcoding to RGBA8.
+  Note: no DXT textures were observed in the tested scenes, so this path is currently untested.
+
+**Still broken:** the game now boots and plays audio with no GL/shader errors, and simple
+vertex-coloured geometry renders (the menu highlight bar), but **textured content is missing**
+— no title text, background, or video. No unsupported texture formats were logged, so the
+remaining fault is likely in texture sampling / UVs or draw ordering, not format support.
+Do NOT consider Mali support fixed; this build is for continued diagnosis.
 
 ## On-device diagnosis (2026-11-19, SM-A366B / Adreno 710, 540p): 22–26 FPS in Rapture
 
@@ -117,6 +140,14 @@ and the fullscreen passes' `max`/`mul`/`rcp`/`mad` sequences. The vertex-colour 
 literally `max oC0, r0, r0` in both. Its colour comes from a `vfetch_mini r0, Offset=4`
 of `FMT_32_32_32_32_FLOAT` in the VS (`shader_612A9A5369E002DA`), which our translator
 also handles (format 38, inherited slot/stride, DWORD offset).
+
+**Status as of 2026-11-20 (parked):** the cutscene overlay is still NOT fixed. Work paused
+to focus on Mali GPU support. A trace-capable Xenia was built from source
+(`XENIA_ENABLE_GPU_TRACE=ON`, compression disabled) and a 9.4 GB stream trace of the exact
+movie frame was captured in `_work/xenia-trace/`, with 407 draws extracted by
+`_work/extract_xenia_frame.py`. Finishing the draw-state diff needs mapping Xenia's internal
+register-enum indices to our raw Xenos addresses — left for a future session. Shader
+translation is definitively ruled out.
 
 Xenia's release binary has **no GPU trace support** (both `trace_gpu_stream` and F4 log
 "GPU trace capture isn't built into this configuration"), so a draw-list diff is not

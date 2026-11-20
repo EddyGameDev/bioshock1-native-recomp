@@ -144,6 +144,13 @@ class Gles3Backend {
   GLuint boundSsbo_[16] = {};
   size_t boundSsboOff_[16] = {};
   size_t boundSsboSize_[16] = {};
+  // Texture-buffer fallback for GPUs with no vertex SSBO support (Mali).
+  GLuint vbTex_[16] = {};
+  GLuint vbTexStorage_[16] = {};
+  GLsizei vbTexStorageSize_[16] = {};
+  GLuint boundVbTexBuf_[16] = {};
+  size_t boundVbTexOff_[16] = {};
+  size_t boundVbTexSize_[16] = {};
   Gles3Shaders::Handle lastVsH_ = 0;
   Gles3Shaders::Handle lastPsH_ = 0;
   bool lastRectProg_ = false;

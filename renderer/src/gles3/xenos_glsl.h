@@ -34,6 +34,10 @@ struct Translation {
 /** Translates big-endian-swapped Xenos shader microcode words into GLSL ES 3.20. */
 Translation Translate(const std::vector<uint32_t>& words, bool pixel);
 
+/** Some GPUs (e.g. Mali) expose zero vertex SSBOs; use texture buffers there. */
+void SetVertexTextureBuffers(bool enabled);
+bool VertexTextureBuffers();
+
 /** Version hash for invalidating disk binary shader caches when translator output changes. */
 uint64_t Version();
 

@@ -112,6 +112,7 @@ struct GlTexFmt {
   bool expand4444 = false;
   bool expand1555 = false;
   bool expand16ToFloat = false;
+  uint8_t dxtMode = 0;  // 0=none, 1=DXT1, 2=DXT3, 3=DXT5 (CPU-decoded on no-S3TC GPUs)
   bool supported = false;
 };
 
@@ -178,24 +179,39 @@ GlTexFmt DescribeGlFormat(uint32_t fmt, bool hasS3tc, bool hasRgtc, bool hasNorm
       break;
     case 18:  // DXT1
     case 51:
-      d.internalFormat = kGlCompressedRgbaS3tcDxt1;
       d.blockBytes = 8;
       d.compressed = true;
-      d.supported = hasS3tc;
+      d.supported = true;
+      if (hasS3tc) {
+        d.internalFormat = kGlCompressedRgbaS3tcDxt1;
+      } else {
+        d.internalFormat = GL_RGBA8;
+        d.dxtMode = 1;
+      }
       break;
     case 19:  // DXT2/3
     case 52:
-      d.internalFormat = kGlCompressedRgbaS3tcDxt3;
       d.blockBytes = 16;
       d.compressed = true;
-      d.supported = hasS3tc;
+      d.supported = true;
+      if (hasS3tc) {
+        d.internalFormat = kGlCompressedRgbaS3tcDxt3;
+      } else {
+        d.internalFormat = GL_RGBA8;
+        d.dxtMode = 2;
+      }
       break;
     case 20:  // DXT4/5
     case 53:
-      d.internalFormat = kGlCompressedRgbaS3tcDxt5;
       d.blockBytes = 16;
       d.compressed = true;
-      d.supported = hasS3tc;
+      d.supported = true;
+      if (hasS3tc) {
+        d.internalFormat = kGlCompressedRgbaS3tcDxt5;
+      } else {
+        d.internalFormat = GL_RGBA8;
+        d.dxtMode = 3;
+      }
       break;
     case 24:  // k_16
       d.internalFormat = hasNorm16 ? kGlR16 : GL_R16F;
@@ -299,12 +315,114 @@ bool HasExtension(const char* extList, const char* name) {
   return false;
 }
 
+// CPU DXT1/3/5 decoder for GPUs without S3TC (e.g. Mali). Produces RGBA8.
+static void DecodeDxtBlock(const uint8_t* s, uint8_t mode, uint8_t* dst, uint32_t bw,
+                           uint32_t bh, uint32_t stride) {
+  const uint8_t* cd = s;  // color block (8 bytes)
+  uint8_t alpha[8] = {255, 255, 255, 255, 255, 255, 255, 255};
+  uint64_t aIndices = 0;
+  if (mode == 2) {  // DXT3: 4-bit alpha per pixel
+    for (int i = 0; i < 8; ++i) {
+      alpha[i] = static_cast<uint8_t>((s[i] & 0x0F) * 17);
+      alpha[i + 0] = alpha[i];
+    }
+    // Each byte holds two pixels: low nibble first pixel, high nibble second.
+    for (int row = 0; row < 4; ++row) {
+      for (int i = 0; i < 2; ++i) {
+        alpha[row * 4 + i * 2 + 0] = static_cast<uint8_t>((s[row * 2 + i] & 0x0F) * 17);
+        alpha[row * 4 + i * 2 + 1] = static_cast<uint8_t>((s[row * 2 + i] >> 4) * 17);
+      }
+    }
+    cd = s + 8;
+  } else if (mode == 3) {  // DXT5: interpolated alpha
+    const uint8_t a0 = s[0], a1 = s[1];
+    alpha[0] = a0; alpha[1] = a1;
+    if (a0 > a1) {
+      for (int i = 0; i < 6; ++i)
+        alpha[2 + i] = static_cast<uint8_t>(((6 - i) * a0 + (1 + i) * a1) / 7);
+    } else {
+      for (int i = 0; i < 4; ++i)
+        alpha[2 + i] = static_cast<uint8_t>(((4 - i) * a0 + (1 + i) * a1) / 5);
+      alpha[6] = 0; alpha[7] = 255;
+    }
+    for (int b = 0; b < 6; ++b) aIndices |= static_cast<uint64_t>(s[2 + b]) << (b * 8);
+    cd = s + 8;
+  }
+
+  const uint16_t c0 = static_cast<uint16_t>(cd[0] | (cd[1] << 8));
+  const uint16_t c1 = static_cast<uint16_t>(cd[2] | (cd[3] << 8));
+  const uint32_t idx = static_cast<uint32_t>(cd[4]) | (static_cast<uint32_t>(cd[5]) << 8) |
+                       (static_cast<uint32_t>(cd[6]) << 16) | (static_cast<uint32_t>(cd[7]) << 24);
+  auto unpack = [](uint16_t c, uint8_t& r, uint8_t& g, uint8_t& b) {
+    uint32_t r5 = (c >> 11) & 0x1F, g6 = (c >> 5) & 0x3F, b5 = c & 0x1F;
+    r = static_cast<uint8_t>((r5 * 255 + 15) / 31);
+    g = static_cast<uint8_t>((g6 * 255 + 31) / 63);
+    b = static_cast<uint8_t>((b5 * 255 + 15) / 31);
+  };
+  uint8_t r0, g0, b0, r1, g1, b1;
+  unpack(c0, r0, g0, b0);
+  unpack(c1, r1, g1, b1);
+  const bool fourColor = (c0 > c1) || mode >= 2;
+  uint8_t cr[4], cg[4], cb[4];
+  cr[0] = r0; cg[0] = g0; cb[0] = b0;
+  cr[1] = r1; cg[1] = g1; cb[1] = b1;
+  if (fourColor) {
+    cr[2] = static_cast<uint8_t>((2 * r0 + r1) / 3);
+    cg[2] = static_cast<uint8_t>((2 * g0 + g1) / 3);
+    cb[2] = static_cast<uint8_t>((2 * b0 + b1) / 3);
+    cr[3] = static_cast<uint8_t>((r0 + 2 * r1) / 3);
+    cg[3] = static_cast<uint8_t>((g0 + 2 * g1) / 3);
+    cb[3] = static_cast<uint8_t>((b0 + 2 * b1) / 3);
+  } else {
+    cr[2] = static_cast<uint8_t>((r0 + r1) / 2);
+    cg[2] = static_cast<uint8_t>((g0 + g1) / 2);
+    cb[2] = static_cast<uint8_t>((b0 + b1) / 2);
+    cr[3] = cg[3] = cb[3] = 0;
+  }
+  for (uint32_t y = 0; y < bh; ++y) {
+    for (uint32_t x = 0; x < bw; ++x) {
+      const uint32_t p = y * 4u + x;
+      const uint32_t ci = (idx >> (p * 2u)) & 3u;
+      const uint8_t ai = (mode == 3) ? alpha[(aIndices >> (p * 3u)) & 7u]
+                                     : ((mode == 1 && !fourColor && ci == 3) ? 0 : alpha[ci]);
+      uint8_t* d = dst + (y * stride + x * 4u);
+      d[0] = cr[ci]; d[1] = cg[ci]; d[2] = cb[ci]; d[3] = ai;
+    }
+  }
+}
+
 size_t LinearizeLevel(const uint8_t* src, size_t maxBytes, const GlTexFmt& fmt, uint32_t endian,
                       uint32_t width, uint32_t height, uint32_t pitchTexels, bool tiled,
                       uint32_t x0, uint32_t y0, std::vector<uint8_t>& out) {
   if (fmt.compressed) {
     const uint32_t bw = (width + 3u) / 4u;
     const uint32_t bh = (height + 3u) / 4u;
+    if (fmt.dxtMode) {
+      out.resize(static_cast<size_t>(width) * height * 4u);
+      const uint32_t pb = std::max(pitchTexels / 4u, 1u);
+      const uint32_t pa = (pb + 31u) & ~31u;
+      const uint32_t bpbLog2 = fmt.blockBytes == 8u ? 3u : 4u;
+      for (uint32_t by = 0; by < bh; ++by) {
+        for (uint32_t bx = 0; bx < bw; ++bx) {
+          size_t off = tiled ? TiledOffset2D(bx + x0, by + y0, pa, bpbLog2)
+                             : (static_cast<size_t>(by + y0) * pb + bx + x0) * fmt.blockBytes;
+          if (off + fmt.blockBytes > maxBytes) continue;
+          const uint32_t cw = std::min(4u, width - bx * 4u);
+          const uint32_t ch = std::min(4u, height - by * 4u);
+          uint8_t block[16];
+          if (endian == 1u || endian == 2u) {
+            Swap16Bytes8(block, src + off);
+            if (fmt.blockBytes == 16u) Swap16Bytes8(block + 8, src + off + 8);
+          } else {
+            std::memcpy(block, src + off, fmt.blockBytes);
+          }
+          DecodeDxtBlock(block, fmt.dxtMode,
+                         out.data() + static_cast<size_t>(by * 4u) * width * 4u + bx * 16u,
+                         cw, ch, width * 4u);
+        }
+      }
+      return out.size();
+    }
     const uint32_t pitchBlocks = std::max(pitchTexels / 4u, 1u);
     const uint32_t pitchAligned = (pitchBlocks + 31u) & ~31u;
     const uint32_t bpbLog2 = fmt.blockBytes == 8u ? 3u : 4u;
@@ -1111,8 +1229,8 @@ void Gles3Resources::UploadTextureData(GuestTexture& tex, const uint32_t words[6
     mipOffset += levelBytes;
   }
 
-  const uint32_t texW = fmt.compressed ? ((width + 3u) & ~3u) : width;
-  const uint32_t texH = fmt.compressed ? ((height + 3u) & ~3u) : height;
+  const uint32_t texW = (fmt.compressed && !fmt.dxtMode) ? ((width + 3u) & ~3u) : width;
+  const uint32_t texH = (fmt.compressed && !fmt.dxtMode) ? ((height + 3u) & ~3u) : height;
   const GLenum target = isCube ? GL_TEXTURE_CUBE_MAP : GL_TEXTURE_2D;
   const bool needAlloc = (tex.tex == 0 || tex.target != target || tex.width != texW ||
                           tex.height != texH || tex.mipLevels != mipCount);
@@ -1147,13 +1265,15 @@ void Gles3Resources::UploadTextureData(GuestTexture& tex, const uint32_t words[6
       const size_t bytes =
           LinearizeLevel(physBase + fOff, totalMem - fOff, fmt, endian, width, height,
                          pitchTexels, tiled, x0, y0, texScratch_);
-      if (fmt.compressed) {
+      if (fmt.compressed && !fmt.dxtMode) {
         glCompressedTexSubImage2D(uploadTarget, 0, 0, 0, static_cast<GLsizei>(texW),
                                   static_cast<GLsizei>(texH), fmt.internalFormat,
                                   static_cast<GLsizei>(bytes), texScratch_.data());
       } else {
+        const GLenum ifmt = fmt.dxtMode ? GL_RGBA : fmt.format;
+        const GLenum type = fmt.dxtMode ? GL_UNSIGNED_BYTE : fmt.type;
         glTexSubImage2D(uploadTarget, 0, 0, 0, static_cast<GLsizei>(width),
-                        static_cast<GLsizei>(height), fmt.format, fmt.type, texScratch_.data());
+                        static_cast<GLsizei>(height), ifmt, type, texScratch_.data());
       }
     }
   }
@@ -1161,22 +1281,24 @@ void Gles3Resources::UploadTextureData(GuestTexture& tex, const uint32_t words[6
   for (uint32_t level = 1; level < mipCount && level < 16u; ++level) {
     const uint32_t w = std::max(width >> level, 1u);
     const uint32_t h = std::max(height >> level, 1u);
-    const uint32_t lw = fmt.compressed ? ((w + 3u) & ~3u) : w;
-    const uint32_t lh = fmt.compressed ? ((h + 3u) & ~3u) : h;
+    const uint32_t lw = (fmt.compressed && !fmt.dxtMode) ? ((w + 3u) & ~3u) : w;
+    const uint32_t lh = (fmt.compressed && !fmt.dxtMode) ? ((h + 3u) & ~3u) : h;
     const size_t mOff = static_cast<size_t>(mipAddr) + mipOffsets[level];
     if (mOff + mipBytes[level] <= totalMem) {
       const size_t bytes =
           LinearizeLevel(physBase + mOff, mipBytes[level], fmt, endian, w, h,
                          mipPitchTexels[level], tiled, 0, 0, texScratch_);
-      if (fmt.compressed) {
+      if (fmt.compressed && !fmt.dxtMode) {
         glCompressedTexSubImage2D(GL_TEXTURE_2D, static_cast<GLint>(level), 0, 0,
                                   static_cast<GLsizei>(lw), static_cast<GLsizei>(lh),
                                   fmt.internalFormat, static_cast<GLsizei>(bytes),
                                   texScratch_.data());
       } else {
+        const GLenum ifmt = fmt.dxtMode ? GL_RGBA : fmt.format;
+        const GLenum type = fmt.dxtMode ? GL_UNSIGNED_BYTE : fmt.type;
         glTexSubImage2D(GL_TEXTURE_2D, static_cast<GLint>(level), 0, 0,
-                        static_cast<GLsizei>(w), static_cast<GLsizei>(h),
-                        fmt.format, fmt.type, texScratch_.data());
+                        static_cast<GLsizei>(w), static_cast<GLsizei>(h), ifmt, type,
+                        texScratch_.data());
       }
     }
   }

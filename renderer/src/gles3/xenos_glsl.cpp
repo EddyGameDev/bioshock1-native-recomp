@@ -474,13 +474,28 @@ struct Translator {
     Line(Format("fetchWordIdx = uint(int(fetchIndex * fetchStride) + %d);", offset));
 
     const std::string buf = Format("vb%u.d", binding);
-    const auto load1 = [&]() {
-      return Format("bswap(%s[min(fetchWordIdx, uint(%s.length()) - 1u)])",
-                    buf.c_str(), buf.c_str());
+    const bool useTB = VertexTextureBuffers();
+    // Mali's compiler rejects passing a `readonly` SSBO element directly into a
+    // user function ("Function call discards 'readonly' access qualifier").
+    // Stage the length and each loaded word in plain locals first, then only
+    // pass those locals to helpers such as bswap()/uintBitsToFloat().
+    Line(useTB ? Format("uint vbLen = uint(textureSize(vb%u)) - 1u;", binding)
+               : Format("uint vbLen = uint(%s.length()) - 1u;", buf.c_str()));
+    uint32_t staged = 0;
+    const auto stageLoad = [&](uint32_t delta) {
+      const std::string name = Format("vfw%u", staged++);
+      const std::string index = Format("min(fetchWordIdx + %uu, vbLen)", delta);
+      if (useTB) {
+        Line(Format("uint %s = texelFetch(vb%u, int(%s)).x;", name.c_str(), binding,
+                    index.c_str()));
+      } else {
+        Line(Format("uint %s = %s[%s];", name.c_str(), buf.c_str(), index.c_str()));
+      }
+      return name;
     };
+    const auto load1 = [&]() { return Format("bswap(%s)", stageLoad(0).c_str()); };
     const auto loadAt = [&](uint32_t delta) {
-      return Format("bswap(%s[min(fetchWordIdx + %uu, uint(%s.length()) - 1u)])",
-                    buf.c_str(), delta, buf.c_str());
+      return Format("bswap(%s)", stageLoad(delta).c_str());
     };
 
     std::string decoded;
@@ -1066,8 +1081,12 @@ struct Translator {
 
 namespace bs1::renderer::XenosGlsl {
 
+static bool g_vertexTextureBuffers = false;
+void SetVertexTextureBuffers(bool enabled) { g_vertexTextureBuffers = enabled; }
+bool VertexTextureBuffers() { return g_vertexTextureBuffers; }
+
 uint64_t Version() {
-  static const char* const tag = "bs1-xenos-glsl-es320-v3-deferred-resolve-clamp";
+  static const char* const tag = "bs1-xenos-glsl-es320-v5-mali-texbuffer";
   uint64_t hash = 14695981039346656037ULL;
   for (const char* p = tag; *p; ++p) {
     hash ^= static_cast<unsigned char>(*p);
@@ -1270,8 +1289,13 @@ Translation Translate(const std::vector<uint32_t>& words, bool pixel) {
   } else {
     for (uint32_t slot : translator.vertexSlotOrder) {
       const uint32_t binding = translator.vertexSlotToBinding[slot];
-      glsl += Format("layout(std430, binding = %u) readonly buffer Vb%u { uint d[]; } vb%u;\n",
-                     binding, binding, binding);
+      if (VertexTextureBuffers()) {
+        glsl += Format("layout(binding = %u) uniform highp usamplerBuffer vb%u;\n", binding,
+                       binding);
+      } else {
+        glsl += Format("layout(std430, binding = %u) readonly buffer Vb%u { uint d[]; } vb%u;\n",
+                       binding, binding, binding);
+      }
       VertexFetch fetch;
       fetch.slot = slot;
       fetch.binding = binding;

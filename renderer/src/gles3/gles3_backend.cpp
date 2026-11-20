@@ -232,6 +232,13 @@ bool Gles3Backend::InitEgl() {
   hasBufferStorage_ = glBufferStorageExt_ && exts &&
                       std::strstr(exts, "GL_EXT_buffer_storage") != nullptr;
 
+  // Mali GPUs expose zero vertex shader storage blocks, but do support texture
+  // buffers (GL_EXT_texture_buffer). Use samplerBuffer for guest vertex fetch.
+  GLint maxVertexSSBOs = 1;
+  glGetIntegerv(GL_MAX_VERTEX_SHADER_STORAGE_BLOCKS, &maxVertexSSBOs);
+  const bool useVertexTextureBuffers = maxVertexSSBOs <= 0;
+  XenosGlsl::SetVertexTextureBuffers(useVertexTextureBuffers);
+
   if (glClipControlExt_) {
     glClipControlExt_(kGlLowerLeftExt, kGlZeroToOneExt);
   }
@@ -1037,6 +1044,37 @@ bool Gles3Backend::ExecuteDraw(const uint32_t* regs, uint32_t initiator, uint32_
     size_t vbOff = 0, vbRange = 0;
     GLuint ssbo = resources_.VertexBufferFor(w0 & ~3u, bytes, vbOff, vbRange);
     if (!ssbo) return false;
+    if (XenosGlsl::VertexTextureBuffers()) {
+      if (vf.binding >= 16u) return false;
+      GLuint& tex = vbTex_[vf.binding];
+      if (!tex) glGenTextures(1, &tex);
+      GLuint& storage = vbTexStorage_[vf.binding];
+      if (!storage) glGenBuffers(1, &storage);
+      if (boundVbTexBuf_[vf.binding] != ssbo || boundVbTexOff_[vf.binding] != vbOff ||
+          boundVbTexSize_[vf.binding] != vbRange) {
+        // glTexBufferRange has strict offset/size alignment; copy the exact range
+        // into a dedicated buffer and use glTexBuffer instead.
+        const GLsizei sz = static_cast<GLsizei>(vbRange);
+        // Mali rejects glCopyBufferSubData from the persistently-mapped SSBO ring,
+        // and GLES has no glGetBufferSubData, so upload from the guest source pointer.
+        const uint8_t* src = resources_.PhysicalPtr((w0 & ~3u) & 0x1FFFFFFFu, vbRange);
+        glBindBuffer(GL_TEXTURE_BUFFER, storage);
+        if (vbTexStorageSize_[vf.binding] != sz) {
+          glBufferData(GL_TEXTURE_BUFFER, sz, nullptr, GL_STREAM_DRAW);
+          vbTexStorageSize_[vf.binding] = sz;
+        }
+        if (src) {
+          glBufferSubData(GL_TEXTURE_BUFFER, 0, static_cast<GLsizeiptr>(vbRange), src);
+        }
+        glActiveTexture(GL_TEXTURE0 + vf.binding);
+        glBindTexture(GL_TEXTURE_BUFFER, tex);
+        glTexBuffer(GL_TEXTURE_BUFFER, GL_R32UI, storage);
+        boundVbTexBuf_[vf.binding] = ssbo;
+        boundVbTexOff_[vf.binding] = vbOff;
+        boundVbTexSize_[vf.binding] = vbRange;
+      }
+      continue;
+    }
     if (vbRange > 0) {
       if (vf.binding >= 16u || boundSsbo_[vf.binding] != ssbo ||
           boundSsboOff_[vf.binding] != vbOff || boundSsboSize_[vf.binding] != vbRange) {
