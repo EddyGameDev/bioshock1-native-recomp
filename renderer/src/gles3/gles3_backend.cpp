@@ -242,11 +242,17 @@ bool Gles3Backend::InitEgl() {
   if (glClipControlExt_) {
     glClipControlExt_(kGlLowerLeftExt, kGlZeroToOneExt);
   }
-  GLESLOG("EGL %d.%d + GLES '%s' on '%s' (clipControl=%d depthClamp=%d bufStorage=%d)",
+  GLint maxCombined = 0, maxVertTex = 0, maxFragTex = 0;
+  glGetIntegerv(GL_MAX_COMBINED_TEXTURE_IMAGE_UNITS, &maxCombined);
+  glGetIntegerv(GL_MAX_VERTEX_TEXTURE_IMAGE_UNITS, &maxVertTex);
+  glGetIntegerv(GL_MAX_TEXTURE_IMAGE_UNITS, &maxFragTex);
+  GLESLOG("EGL %d.%d + GLES '%s' on '%s' (clipControl=%d depthClamp=%d bufStorage=%d "
+          "texUnits=%d/%d/%d maxVSSSBO=%d)",
           major, minor,
           reinterpret_cast<const char*>(glGetString(GL_VERSION)),
           reinterpret_cast<const char*>(glGetString(GL_RENDERER)),
-          glClipControlExt_ ? 1 : 0, hasDepthClamp_ ? 1 : 0, hasBufferStorage_ ? 1 : 0);
+          glClipControlExt_ ? 1 : 0, hasDepthClamp_ ? 1 : 0, hasBufferStorage_ ? 1 : 0,
+          maxCombined, maxVertTex, maxFragTex, maxVertexSSBOs);
 
   glGenVertexArrays(1, &emptyVao_);
   glBindVertexArray(emptyVao_);
@@ -1066,7 +1072,7 @@ bool Gles3Backend::ExecuteDraw(const uint32_t* regs, uint32_t initiator, uint32_
         if (src) {
           glBufferSubData(GL_TEXTURE_BUFFER, 0, static_cast<GLsizeiptr>(vbRange), src);
         }
-        glActiveTexture(GL_TEXTURE0 + vf.binding);
+        glActiveTexture(GL_TEXTURE0 + vf.binding + 16u);
         glBindTexture(GL_TEXTURE_BUFFER, tex);
         glTexBuffer(GL_TEXTURE_BUFFER, GL_R32UI, storage);
         boundVbTexBuf_[vf.binding] = ssbo;

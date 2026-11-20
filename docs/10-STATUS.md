@@ -1,8 +1,14 @@
 # Status — verified facts, not aspirations
 
-Last updated: 2026-11-20 (`v0.0.6-mali-wip` — Adreno/Windows unchanged; Mali GPU support is **partial**, see below).
+Last updated: 2026-11-20 (`v0.0.6-mali-fix-experimental` — Mali-G78 support fixed; Adreno/Windows unchanged).
 
-## `v0.0.6-mali-wip` — Mali-G78 support (IN PROGRESS, NOT A FIX YET)
+## `v0.0.6-mali-fix-experimental` — Mali-G78 support (FIXED)
+
+The final missing piece was **texture-unit aliasing**: the texture-buffer fallback bound
+vertex-buffer sampler objects on units 0..N-1, which clobbered the PS sampler2D bindings
+(also 0..15) on Mali. Moving vertex-buffer samplers to units 16+ (translator v6) fixed it —
+the title screen and in-game textured geometry now render correctly on the SM-G998B.
+Verified on device: title screen, main menu and in-game 3D render with no GL/shader errors.
 
 Test device: SM-G998B (Exynos 2100, Mali-G78, GLES 3.2, Android 15).
 
@@ -19,11 +25,8 @@ Fixes shipped in this build:
 - **CPU DXT1/3/5 decoder** added for GPUs without S3TC (`s3tc=0` on Mali), transcoding to RGBA8.
   Note: no DXT textures were observed in the tested scenes, so this path is currently untested.
 
-**Still broken:** the game now boots and plays audio with no GL/shader errors, and simple
-vertex-coloured geometry renders (the menu highlight bar), but **textured content is missing**
-— no title text, background, or video. No unsupported texture formats were logged, so the
-remaining fault is likely in texture sampling / UVs or draw ordering, not format support.
-Do NOT consider Mali support fixed; this build is for continued diagnosis.
+**Resolved.** The earlier "textured content missing" symptom was caused by the
+vertex-buffer texture samplers aliasing the PS sampler units; see the v6 fix above.
 
 ## On-device diagnosis (2026-11-19, SM-A366B / Adreno 710, 540p): 22–26 FPS in Rapture
 

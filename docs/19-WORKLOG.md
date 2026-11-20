@@ -20,8 +20,11 @@ Device: SM-G998B / Mali-G78 / GLES 3.2 / Android 15. Reported symptom: audio onl
   `glTexBufferRange` and `glCopyBufferSubData` both fail on Mali, so a plain buffer + CPU
   source pointer is used.
 - Added CPU DXT1/3/5 -> RGBA8 decoder for `hasS3tc == false` (untested in practice).
-- Result: shaders compile and link cleanly, game reaches the title menu with audio, but
-  textured content still does not render. Documented as `v0.0.6-mali-wip`, not a finished fix.
+- **Root cause of missing textures found:** the texture-buffer fallback bound vertex-buffer
+  samplers on units 0..N-1, clobbering the PS sampler2D bindings (0..15) on Mali. Moved
+  vertex-buffer samplers to units 16+ (translator v6). Verified on device: title screen,
+  main menu and in-game 3D all render correctly with no GL/shader errors. Released as
+  `v0.0.6-mali-fix-experimental` (still an experimental release, per project convention).
 
 ---
 

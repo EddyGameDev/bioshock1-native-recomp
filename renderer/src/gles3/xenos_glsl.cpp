@@ -1086,7 +1086,7 @@ void SetVertexTextureBuffers(bool enabled) { g_vertexTextureBuffers = enabled; }
 bool VertexTextureBuffers() { return g_vertexTextureBuffers; }
 
 uint64_t Version() {
-  static const char* const tag = "bs1-xenos-glsl-es320-v5-mali-texbuffer";
+  static const char* const tag = "bs1-xenos-glsl-es320-v6-mali-tb-units";
   uint64_t hash = 14695981039346656037ULL;
   for (const char* p = tag; *p; ++p) {
     hash ^= static_cast<unsigned char>(*p);
@@ -1290,8 +1290,10 @@ Translation Translate(const std::vector<uint32_t>& words, bool pixel) {
     for (uint32_t slot : translator.vertexSlotOrder) {
       const uint32_t binding = translator.vertexSlotToBinding[slot];
       if (VertexTextureBuffers()) {
-        glsl += Format("layout(binding = %u) uniform highp usamplerBuffer vb%u;\n", binding,
-                       binding);
+        // Keep vertex-buffer sampler units out of the PS texture range (0..15)
+        // so a buffer texture can never clobber a 2D sampler binding on Mali.
+        glsl += Format("layout(binding = %u) uniform highp usamplerBuffer vb%u;\n",
+                       binding + 16u, binding);
       } else {
         glsl += Format("layout(std430, binding = %u) readonly buffer Vb%u { uint d[]; } vb%u;\n",
                        binding, binding, binding);
