@@ -320,13 +320,12 @@ bool HasExtension(const char* extList, const char* name) {
 static void DecodeDxtBlock(const uint8_t* s, uint8_t mode, uint8_t* dst, uint32_t bw,
                            uint32_t bh, uint32_t stride) {
   const uint8_t* cd = s;  // color block (8 bytes)
-  uint8_t alpha[8] = {255, 255, 255, 255, 255, 255, 255, 255};
+  // DXT3 has one 4-bit alpha per pixel (16 pixels in a 4x4 block); alpha[8]
+  // used to overflow here. DXT5 has 8 interpolated alpha values + 3-bit indices.
+  uint8_t alpha[16] = {255, 255, 255, 255, 255, 255, 255, 255,
+                       255, 255, 255, 255, 255, 255, 255, 255};
   uint64_t aIndices = 0;
   if (mode == 2) {  // DXT3: 4-bit alpha per pixel
-    for (int i = 0; i < 8; ++i) {
-      alpha[i] = static_cast<uint8_t>((s[i] & 0x0F) * 17);
-      alpha[i + 0] = alpha[i];
-    }
     // Each byte holds two pixels: low nibble first pixel, high nibble second.
     for (int row = 0; row < 4; ++row) {
       for (int i = 0; i < 2; ++i) {
@@ -384,13 +383,18 @@ static void DecodeDxtBlock(const uint8_t* s, uint8_t mode, uint8_t* dst, uint32_
     for (uint32_t x = 0; x < bw; ++x) {
       const uint32_t p = y * 4u + x;
       const uint32_t ci = (idx >> (p * 2u)) & 3u;
+      // DXT3 alpha is per-pixel (index p); DXT5 uses the 3-bit alpha index;
+      // DXT1 is opaque except the 3-color transparent-black case.
       const uint8_t ai = (mode == 3) ? alpha[(aIndices >> (p * 3u)) & 7u]
-                                     : ((mode == 1 && !fourColor && ci == 3) ? 0 : alpha[ci]);
+                         : (mode == 2) ? alpha[p]
+                         : ((mode == 1 && !fourColor && ci == 3) ? 0 : 255);
       uint8_t* d = dst + (y * stride + x * 4u);
       d[0] = cr[ci]; d[1] = cg[ci]; d[2] = cb[ci]; d[3] = ai;
     }
   }
 }
+
+
 
 size_t LinearizeLevel(const uint8_t* src, size_t maxBytes, const GlTexFmt& fmt, uint32_t endian,
                       uint32_t width, uint32_t height, uint32_t pitchTexels, bool tiled,
@@ -403,10 +407,14 @@ size_t LinearizeLevel(const uint8_t* src, size_t maxBytes, const GlTexFmt& fmt, 
       const uint32_t pb = std::max(pitchTexels / 4u, 1u);
       const uint32_t pa = (pb + 31u) & ~31u;
       const uint32_t bpbLog2 = fmt.blockBytes == 8u ? 3u : 4u;
+      // PackedBaseOffset() returns an offset in *texels*, but here we index
+      // compressed 4x4 blocks — divide by 4 (as the non-DXT path does).
+      const uint32_t bx0 = x0 / 4u;
+      const uint32_t by0 = y0 / 4u;
       for (uint32_t by = 0; by < bh; ++by) {
         for (uint32_t bx = 0; bx < bw; ++bx) {
-          size_t off = tiled ? TiledOffset2D(bx + x0, by + y0, pa, bpbLog2)
-                             : (static_cast<size_t>(by + y0) * pb + bx + x0) * fmt.blockBytes;
+          size_t off = tiled ? TiledOffset2D(bx + bx0, by + by0, pa, bpbLog2)
+                             : (static_cast<size_t>(by + by0) * pb + bx + bx0) * fmt.blockBytes;
           if (off + fmt.blockBytes > maxBytes) continue;
           const uint32_t cw = std::min(4u, width - bx * 4u);
           const uint32_t ch = std::min(4u, height - by * 4u);

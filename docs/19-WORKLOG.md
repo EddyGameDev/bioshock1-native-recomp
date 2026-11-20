@@ -6,20 +6,19 @@ holds the current snapshot; this file holds the history.
 
 ---
 
-## Session 23 — 2026-11-20 — Mali stuck-on-loading-screen documented
+## Session 23/24 — 2026-11-20 — Loading-screen "blocker" retracted
 
-- Device testing confirmed Mali (SM-G998B / Mali-G78) **does not get past the loading
-  screen** after starting a new game. Title/menu/cinematics render fine; the loading UI
-  cycles videos but the level never finishes and gameplay is never reached.
-- `PERF(10s)` on the loading screen: `exec≈10s/10s` (guest CPU-saturated, actively working),
-  `VdSwap` advancing (~30 FPS / 97k+ swaps), no GL/shader errors — not a renderer stall,
-  not a deadlock. Hypothesised guest-side asset load (CPU DXT fallback, since `s3tc=0`).
-- Centre loading video flickers between video frames and the dark "BIOSHOCK" logo card
-  (alternating detailed/near-uniform frames every 250–500 ms); `LOADING...` text is static.
-- Added a prominent "KNOWN BLOCKER (Mali): does not get past the loading screen" section to
-  `10-STATUS.md` and to the GitHub release notes, per user request.
-- Fix from Session 22 (fresh texture-buffer objects on resize, no more fixed 256 KB buffer)
-  remains: no crash, no vertex explosions.
+- **Retraction:** the earlier "Mali never gets past the loading screen" conclusion was wrong.
+  It came from over-eager automated ADB input — repeated synthetic A/START taps during the
+  intro/cutscenes were read as menu/quit and returned the game to the title/loading screen.
+  The user confirmed the game was in-game and my live driving sent it back. Corrected
+  `10-STATUS.md` and the GitHub release notes to remove the false blocker claim.
+- Passive diagnostics found no genuine renderer stall: `VdSwap` advanced normally, DXT CPU
+  decodes were modest (~600 uploads over minutes), no GL/shader errors. Lesson: do not judge
+  game-state transitions from automated device driving.
+- Legitimate DXT decoder correctness fixes were kept (DXT3 alpha out-of-bounds write and
+  alpha indexing, packed-mip block offset). Debug DXT counters were removed.
+- Version bumped to `0.0.6.3-mali-loading-fix-experimental`.
 
 ---
 

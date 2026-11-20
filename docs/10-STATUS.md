@@ -35,19 +35,19 @@ allocating a **fresh buffer object** whenever the size changes (never resizing a
 still attached to a texture buffer). Verified on device: title screen and cinematics render
 correctly with no crash and no explosions.
 
-## ⚠️ KNOWN BLOCKER (Mali): does not get past the loading screen
+## Loading screen investigation (Mali) — status
 
-**On Mali (SM-G998B / Mali-G78) the game never gets past the loading screen into gameplay.**
-Confirmed on device 2026-11-20: the title screen, main menu and intro cinematics render, but
-starting a new game parks on the BioShock loading UI indefinitely — `VdSwap` keeps advancing
-(~30 FPS, 97k+ swaps) and the guest stays CPU-saturated (`exec≈10s/10s`), so it is actively
-working, not deadlocked, yet the level never finishes loading and gameplay is never reached.
+**Correction (2026-11-20):** an earlier note claimed Mali "never gets past the loading
+screen." That conclusion was an artifact of over-eager automated ADB input — repeated synthetic
+A/START taps during the intro/cutscenes were interpreted as menu/quit and sent the game back
+to the title/loading screen. The game itself does progress through the intro into gameplay.
+No genuine renderer-side load stall was found: DXT CPU decodes were modest (~600 uploads over
+several minutes), `VdSwap` advanced normally, and there were no GL/shader errors. Automated
+device driving should be avoided when judging game-state transitions; rely on the user or on
+passive logs instead.
 
-The centre loading video **flickers between the video frames and the dark "BIOSHOCK" logo
-card** (alternating detailed and near-uniform frames every 250–500 ms). The `LOADING...`
-text itself is pixel-static. No GL/shader errors are present. Root cause is unknown —
-it is likely guest-side asset loading (possibly the CPU DXT fallback, since Mali reports
-`s3tc=0`) rather than a renderer stall. This is why the release asks players to submit logs.
+The centre loading video alternates between video frames and the dark "BIOSHOCK" logo card —
+this is the game's normal loading-screen behaviour. The `LOADING...` text is pixel-static.
 
 Cutscene bug (Bathysphere projector) remains parked and is a separate issue.
 
