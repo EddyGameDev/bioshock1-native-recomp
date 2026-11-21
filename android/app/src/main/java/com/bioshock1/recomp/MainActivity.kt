@@ -261,19 +261,28 @@ class MainActivity : Activity() {
         }
     }
 
+    /** Resolution actually rendered when Perf Mode steps the requested preset down a tier. */
+    private fun effectiveRes(): String {
+        if (driverMode != "custom" || !perfModeEnabled) return internalRes
+        val i = resPresets.indexOf(internalRes)
+        return if (i > 0) resPresets[i - 1] else internalRes
+    }
+
     private fun updateSettingButtons() {
         val isCustom = driverMode == "custom"
         driverButton.text = if (isCustom) "Driver: Custom GLES3" else "Driver: Vulkan"
         scaleButton.text = if (isCustom) {
-            "Internal: $internalRes (Live)"
+            "Internal: $internalRes (Live)" +
+                if (perfModeEnabled && effectiveRes() != internalRes) " -> ${effectiveRes()} perf" else ""
         } else {
             if (vkScale == 2) "Scale: 2x (1440p)" else "Scale: 1x (720p)"
         }
         upscaleButton.text = if (upscaleMode == "lanczos") "Filter: Lanczos" else "Filter: Bilinear"
         fxaaButton.visibility = if (isCustom) View.GONE else View.VISIBLE
-        perfButton.visibility = if (isCustom) View.GONE else View.VISIBLE
+        // Perf Mode is now wired into the custom renderer too (lower res/filter/aniso).
+        perfButton.visibility = View.VISIBLE
         fxaaButton.text = if (fxaaEnabled) "AA: FXAA" else "AA: Off"
-        perfButton.text = if (perfModeEnabled) "Perf Mode: ON" else "Perf Mode: OFF"
+        perfButton.text = if (perfModeEnabled) "Perf: ON (${effectiveRes()})" else "Perf: OFF"
     }
 
     private fun updateStatus() {
@@ -410,7 +419,7 @@ class MainActivity : Activity() {
         fpsView = fps
 
         if (driverMode == "custom") {
-            val resBtn = makeHudPill("RES: $internalRes").apply {
+            val resBtn = makeHudPill("RES: ${effectiveRes()}").apply {
                 layoutParams = LinearLayout.LayoutParams(
                     LinearLayout.LayoutParams.WRAP_CONTENT,
                     LinearLayout.LayoutParams.WRAP_CONTENT,
@@ -419,8 +428,8 @@ class MainActivity : Activity() {
                     val idx = resPresets.indexOf(internalRes).coerceAtLeast(0)
                     internalRes = resPresets[(idx + 1) % resPresets.size]
                     prefs.edit().putString("internal_res", internalRes).apply()
-                    NativeBridge.nativeSetInternalResolution(internalRes)
-                    text = "RES: $internalRes"
+                    NativeBridge.nativeSetInternalResolution(effectiveRes())
+                    text = "RES: ${effectiveRes()}"
                 }
             }
             hudBar.addView(resBtn)

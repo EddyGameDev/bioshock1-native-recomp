@@ -6,6 +6,21 @@ holds the current snapshot; this file holds the history.
 
 ---
 
+## Session 26 — 2026-11-21 — v0.0.6.5 perf + skybox investigation
+
+- Investigations found: (a) Perf Mode was a hidden no-op on the custom renderer (button
+  `View.GONE`, flags only applied in Vulkan branch); (b) resolve/present paths invalidate
+  all cached draw state; (c) no skybox-specific code exists — leading hypothesis is the
+  cube texture target-mismatch guard substituting the 1x1 white cube texture.
+- Wired Perf Mode into the custom renderer: one-tier resolution step-down, bilinear
+  filter, anisotropy 1. Exposed the toggle button; HUD shows effective resolution.
+- Scissored the present letterbox clear to the bars only.
+- Added one-shot `SKY-DIAG` cube-fetch logging and `SHADER-PERF-DIAG` interpreter-fallback
+  counter to gather evidence for the skybox and FPS issues (no rendering changes).
+- Built/published `v0.0.6.5-perf-skybox-experimental`.
+
+---
+
 ## Session 25 — 2026-11-20 — v0.0.6.4 Mali Hotfix release
 
 - User confirmed the game reaches controllable gameplay with no major visual issues.

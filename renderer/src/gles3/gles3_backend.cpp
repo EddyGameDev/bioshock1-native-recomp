@@ -915,8 +915,23 @@ bool Gles3Backend::ExecuteDraw(const uint32_t* regs, uint32_t initiator, uint32_
       if (tex && tex == depthTex) tex = resources_.WhiteTexture2D();
 
       const GLenum target = (fetch.dimension == 3u) ? GL_TEXTURE_CUBE_MAP : GL_TEXTURE_2D;
+      const GLuint texBeforeGuard = tex;
       if (target == GL_TEXTURE_CUBE_MAP && !isCube) tex = resources_.WhiteTextureCube();
       if (target == GL_TEXTURE_2D && isCube) tex = resources_.WhiteTexture2D();
+
+      // Skybox investigation: log cube-texture fetches and whether the GLES path
+      // substituted the 1x1 white fallback (which would make the sky disappear).
+      if (fetch.dimension == 3u || isCube) {
+        static std::atomic<uint32_t> s_cubeFetchLogs{0};
+        if (s_cubeFetchLogs.fetch_add(1, std::memory_order_relaxed) < 16u) {
+          GLESLOG("SKY-DIAG cube fetch: vs=%u ps=%u slot=%u fetchDim=%u constDim=%u "
+                  "base=0x%X fmt=%u %ux%u texBefore=0x%X texFinal=0x%X whiteCube=0x%X fallback=%s",
+                  vsH, psH, fetch.slot, fetch.dimension, (words[5] >> 9) & 3u,
+                  words[1] & 0xFFFFF000u, words[1] & 0x3Fu, tw, th,
+                  texBeforeGuard, tex, resources_.WhiteTextureCube(),
+                  (tex != texBeforeGuard) ? "YES" : "no");
+        }
+      }
 
       const GLuint smp = (rSurf && rSurf->isDepth && !resources_.HasFloatLinear())
                              ? resources_.NearestClampSampler()
@@ -1811,9 +1826,25 @@ void Gles3Backend::ExecutePresent(uint32_t fbAddr, uint32_t fbWidth, uint32_t fb
     }
   }
   if (vpX > 0 || vpY > 0 || vpW < winW || vpH < winH) {
-    glViewport(0, 0, winW, winH);
+    // Clear only the letterbox bars, not the whole window: the present quad covers
+    // the centre viewport anyway, so a full-window clear is wasted bandwidth.
     glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
-    glClear(GL_COLOR_BUFFER_BIT);
+    glEnable(GL_SCISSOR_TEST);
+    const GLint right = vpX + vpW;
+    const GLint top = vpY + vpH;
+    if (vpY > 0) {
+      glScissor(0, 0, winW, vpY);                 // bottom bar
+      glClear(GL_COLOR_BUFFER_BIT);
+      glScissor(0, top, winW, winH - top);        // top bar
+      glClear(GL_COLOR_BUFFER_BIT);
+    }
+    if (vpX > 0) {
+      glScissor(0, vpY, vpX, vpH);                // left bar
+      glClear(GL_COLOR_BUFFER_BIT);
+      glScissor(right, vpY, winW - right, vpH);   // right bar
+      glClear(GL_COLOR_BUFFER_BIT);
+    }
+    glDisable(GL_SCISSOR_TEST);
   }
   glViewport(vpX, vpY, vpW, vpH);
 

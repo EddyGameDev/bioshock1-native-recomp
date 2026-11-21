@@ -2,6 +2,7 @@
 
 #include <android/log.h>
 
+#include <atomic>
 #include <cstring>
 #include <fstream>
 #include <sstream>
@@ -355,6 +356,20 @@ Gles3Shaders::Handle Gles3Shaders::Intern(const uint32_t* words, uint32_t count,
     return h;
   }
 
+  // Perf diagnostic: count shaders that fell back to the 65536-step interpreter
+  // instead of structured GLSL. These are catastrophically slow on Mali if hot.
+  {
+    static std::atomic<uint32_t> s_interpShaders{0};
+    static std::atomic<uint32_t> s_totalShaders{0};
+    const uint32_t total = s_totalShaders.fetch_add(1, std::memory_order_relaxed) + 1;
+    if (tr.usedInterpreter) {
+      const uint32_t n = s_interpShaders.fetch_add(1, std::memory_order_relaxed) + 1;
+      if (n <= 16u || (n % 50u) == 0u) {
+        GLESLOG("SHADER-PERF-DIAG interpreter-fallback shader %s hash=%016llx (total interp=%u/%u)",
+                pixel ? "PS" : "VS", static_cast<unsigned long long>(hash), n, total);
+      }
+    }
+  }
   stage.vertexFetches = std::move(tr.vertexFetches);
   stage.textureFetches = std::move(tr.textureFetches);
   stage.constantMap = std::move(tr.constantMap);

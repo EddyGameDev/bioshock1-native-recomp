@@ -184,9 +184,29 @@ int InitRuntime(const std::string& root, const std::string& driverMode,
   };
 
   if (driver == "custom") {
-    args.push_back("--gpu.custom.internal_resolution=" + resPreset);
-    args.push_back("--gpu.custom.present_filter=" + upscale);
-    args.push_back("--gpu.custom.anisotropy=2");
+    // Perf Mode was previously ignored on the custom renderer (it only applied to the
+    // Vulkan path). Wire it to the low-cost custom settings so the toggle does something.
+    std::string customRes = resPreset;
+    std::string customFilter = upscale;
+    int customAniso = 2;
+    if (perfMode) {
+      // GPU-bound: stepping down one resolution tier roughly halves pixel work.
+      // Keep the user's stored preset intact; only the effective render res changes.
+      if (customRes == "2160p" || customRes == "4k") customRes = "1440p";
+      else if (customRes == "1440p") customRes = "1080p";
+      else if (customRes == "1080p") customRes = "900p";
+      else if (customRes == "900p") customRes = "720p";
+      else if (customRes == "720p") customRes = "540p";
+      else if (customRes == "540p") customRes = "360p";
+      customFilter = "bilinear";  // 1 tap vs Lanczos 9 taps
+      customAniso = 1;            // cheapest texture filtering on Mali
+    }
+    AJLOG("custom renderer settings: res=%s (requested %s) filter=%s aniso=%d perf=%d",
+          customRes.c_str(), resPreset.c_str(), customFilter.c_str(), customAniso,
+          perfMode ? 1 : 0);
+    args.push_back("--gpu.custom.internal_resolution=" + customRes);
+    args.push_back("--gpu.custom.present_filter=" + customFilter);
+    args.push_back("--gpu.custom.anisotropy=" + std::to_string(customAniso));
     args.push_back("--gpu.custom.letterbox=true");
     args.push_back("--gpu.custom.vsync=true");
     args.push_back("--apu.max_queued_frames=32");

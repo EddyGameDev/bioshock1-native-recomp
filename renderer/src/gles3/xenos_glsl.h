@@ -29,6 +29,7 @@ struct Translation {
   uint32_t colourTargets = 1;         // bitmask of exported oC0..oC3
   bool writesDepth = false;
   bool usesKill = false;
+  bool usedInterpreter = false;  // true when EmitStructured failed and the 65536-step interpreter was emitted
 };
 
 /** Translates big-endian-swapped Xenos shader microcode words into GLSL ES 3.20. */

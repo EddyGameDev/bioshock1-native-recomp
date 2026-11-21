@@ -1,6 +1,31 @@
 # Status — verified facts, not aspirations
 
-Last updated: 2026-11-20 (`v0.0.6.4-mali-hotfix-experimental` — Mali-G78 playable; Adreno/Windows unchanged).
+Last updated: 2026-11-21 (`v0.0.6.5-perf-skybox-experimental` — perf wiring + skybox diagnostics; Adreno/Windows unchanged).
+
+## `v0.0.6.5-perf-skybox-experimental` — current release
+
+Performance work + skybox investigation build.
+
+**Performance changes:**
+- **Perf Mode is now wired into the custom GLES3 renderer.** It was previously a hidden
+  no-op (only applied to the Vulkan path). With Perf Mode ON (the default), the effective
+  internal resolution steps down one tier (e.g. 540p→360p, ~0.44x pixels), the present
+  filter becomes bilinear (1 tap vs Lanczos 9 taps), and anisotropy drops to 1. The
+  launcher button is now visible on the custom path and the HUD RES pill shows the
+  *effective* resolution. Turn Perf Mode OFF to restore the full requested preset.
+- The present-stage letterbox clear is now scissored to only the black bars instead of
+  clearing the whole window.
+
+**Skybox diagnostics (one-shot logs, no rendering change):**
+- `SKY-DIAG cube fetch:` logs every cube-texture fetch with shader hashes, slot, fetch
+  instruction vs fetch-constant dimensions, texture format/size, and whether the 1x1
+  white fallback texture was substituted — the leading hypothesis for the missing sky.
+- `SHADER-PERF-DIAG interpreter-fallback shader:` counts shaders that fell back to the
+  65536-step GLSL interpreter instead of structured code; if any hot shader uses it,
+  that would explain low FPS on Mali.
+
+Known issues still open: no skybox (root cause under investigation), GPU-bound FPS
+(Perf Mode should improve it), Bathysphere projector cutscene bug (parked).
 
 ## `v0.0.6.4-mali-hotfix-experimental` — current release
 

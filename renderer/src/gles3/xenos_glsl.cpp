@@ -942,6 +942,7 @@ struct Translator {
         Line("}");
         return out.problem.empty();
       }
+      out.usedInterpreter = true;  // structured emission failed; using slow interpreter
       body = std::move(savedBody);
       indent = savedIndent;
       vertexSlotOrder = savedVOrder;
