@@ -419,15 +419,31 @@ size_t LinearizeLevel(const uint8_t* src, size_t maxBytes, const GlTexFmt& fmt, 
           const uint32_t cw = std::min(4u, width - bx * 4u);
           const uint32_t ch = std::min(4u, height - by * 4u);
           uint8_t block[16];
-          if (endian == 1u || endian == 2u) {
-            Swap16Bytes8(block, src + off);
-            if (fmt.blockBytes == 16u) Swap16Bytes8(block + 8, src + off + 8);
-          } else {
-            std::memcpy(block, src + off, fmt.blockBytes);
+          // Match the working D3D11 path: Xenos DXT blocks are ALWAYS stored
+          // 16-bit byte-swapped regardless of the declared texture endian.
+          // Only swapping when endian==1||2 left sky/light cubemaps (e.g. fmt 19,
+          // endian 0/3) undecoded garbage on S3TC-less GPUs -> black sky/lights.
+          Swap16Bytes8(block, src + off);
+          if (fmt.blockBytes == 16u) Swap16Bytes8(block + 8, src + off + 8);
+          uint8_t* dstPx = out.data() + static_cast<size_t>(by * 4u) * width * 4u + bx * 16u;
+          DecodeDxtBlock(block, fmt.dxtMode, dstPx, cw, ch, width * 4u);
+          // Correct DXT diagnostic: uses the real (possibly tiled) offset and the
+          // actual decoded pixel written to out. Focus on the sky cube (mode 2).
+          {
+            static std::atomic<uint32_t> s_dxtRealLogs{0};
+            if (fmt.dxtMode == 2u && by == 0u && bx == 0u &&
+                s_dxtRealLogs.fetch_add(1, std::memory_order_relaxed) < 12u) {
+              GLESLOG("DXT-REAL mode=%u endian=%u tiled=%u %ux%u pitch=%u off=%llu "
+                      "raw=%02X%02X%02X%02X%02X%02X%02X%02X block=%02X%02X%02X%02X%02X%02X%02X%02X "
+                      "px=%02X%02X%02X%02X",
+                      fmt.dxtMode, endian, tiled ? 1u : 0u, width, height, pitchTexels,
+                      static_cast<unsigned long long>(off),
+                      src[off], src[off + 1], src[off + 2], src[off + 3],
+                      src[off + 4], src[off + 5], src[off + 6], src[off + 7],
+                      block[0], block[1], block[2], block[3], block[4], block[5], block[6],
+                      block[7], dstPx[0], dstPx[1], dstPx[2], dstPx[3]);
+            }
           }
-          DecodeDxtBlock(block, fmt.dxtMode,
-                         out.data() + static_cast<size_t>(by * 4u) * width * 4u + bx * 16u,
-                         cw, ch, width * 4u);
         }
       }
       return out.size();

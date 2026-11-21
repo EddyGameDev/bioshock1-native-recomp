@@ -1,7 +1,11 @@
 package com.bioshock1.recomp
 
 import android.app.Activity
+import android.content.Context
 import android.content.Intent
+import android.media.AudioAttributes
+import android.media.AudioFocusRequest
+import android.media.AudioManager
 import android.graphics.Color
 import android.net.Uri
 import android.os.Build
@@ -237,6 +241,9 @@ class MainActivity : Activity() {
 
     override fun onDestroy() {
         hudHandler.removeCallbacks(fpsRunnable)
+        audioFocusRequest?.let {
+            (getSystemService(Context.AUDIO_SERVICE) as AudioManager).abandonAudioFocusRequest(it)
+        }
         super.onDestroy()
     }
 
@@ -262,11 +269,7 @@ class MainActivity : Activity() {
     }
 
     /** Resolution actually rendered when Perf Mode steps the requested preset down a tier. */
-    private fun effectiveRes(): String {
-        if (driverMode != "custom" || !perfModeEnabled) return internalRes
-        val i = resPresets.indexOf(internalRes)
-        return if (i > 0) resPresets[i - 1] else internalRes
-    }
+    private fun effectiveRes(): String = internalRes
 
     private fun updateSettingButtons() {
         val isCustom = driverMode == "custom"
@@ -367,12 +370,30 @@ class MainActivity : Activity() {
         setPadding(16, 8, 16, 8)
     }
 
+    private var audioFocusRequest: AudioFocusRequest? = null
+
+    /** Hold audio focus while the game runs so the system stops stealing/rerouting
+     *  the AAudio stream (Samsung MMAP route changes were killing it randomly). */
+    private fun requestAudioFocus() {
+        val am = getSystemService(Context.AUDIO_SERVICE) as AudioManager
+        val attrs = AudioAttributes.Builder()
+            .setUsage(AudioAttributes.USAGE_GAME)
+            .setContentType(AudioAttributes.CONTENT_TYPE_MUSIC)
+            .build()
+        val req = AudioFocusRequest.Builder(AudioManager.AUDIOFOCUS_GAIN)
+            .setAudioAttributes(attrs)
+            .build()
+        audioFocusRequest = req
+        am.requestAudioFocus(req)
+    }
+
     private fun startGame() {
         if (surface != null) return
         if (!File(gameDir, "default.xex").exists()) {
             Toast.makeText(this, "Import the ISO first", Toast.LENGTH_SHORT).show()
             return
         }
+        requestAudioFocus()
         // Mirror renderer logs to a file so EXPORT LOGS works without logcat access.
         val runtimeLog = File(getExternalFilesDir(null), "bs1-runtime.log")
         runtimeLog.writeText("")

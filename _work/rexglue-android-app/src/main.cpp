@@ -190,14 +190,9 @@ int InitRuntime(const std::string& root, const std::string& driverMode,
     std::string customFilter = upscale;
     int customAniso = 2;
     if (perfMode) {
-      // GPU-bound: stepping down one resolution tier roughly halves pixel work.
-      // Keep the user's stored preset intact; only the effective render res changes.
-      if (customRes == "2160p" || customRes == "4k") customRes = "1440p";
-      else if (customRes == "1440p") customRes = "1080p";
-      else if (customRes == "1080p") customRes = "900p";
-      else if (customRes == "900p") customRes = "720p";
-      else if (customRes == "720p") customRes = "540p";
-      else if (customRes == "540p") customRes = "360p";
+      // TEMP TEST: keep the requested resolution. A prior build stepped it down
+      // one tier (540p->360p) and level loads began intermittently failing.
+      // Retain only the low-cost filter/aniso changes for this A/B test.
       customFilter = "bilinear";  // 1 tap vs Lanczos 9 taps
       customAniso = 1;            // cheapest texture filtering on Mali
     }

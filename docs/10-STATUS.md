@@ -1,6 +1,33 @@
 # Status — verified facts, not aspirations
 
-Last updated: 2026-11-21 (`v0.0.6.5-perf-skybox-experimental` — perf wiring + skybox diagnostics; Adreno/Windows unchanged).
+Last updated: 2026-11-21 (`v0.0.6.6-audio-load-fix-experimental` — audio liveness watchdog; Adreno/Windows unchanged).
+
+**Open issues — see [`docs/20-KNOWN-ISSUES.md`](20-KNOWN-ISSUES.md)** for detailed,
+evidence-backed diagnosis of the missing skybox/dark scene, the random audio death +
+load stall, the 30 FPS cap, and the parked cutscene bug.
+
+## `v0.0.6.6-audio-load-fix-experimental` — current release
+
+**Root cause of intermittent load stalls found (audio-related).** The guest's level-load progress
+is coupled to the AAudio callback chain:
+`AAudio callback → on_frame_played() → APU semaphore credit → guest XAudio2 render callback`.
+When Samsung's audio HAL MMAP path dies (`audio_hw_proxy2: get_mmap_position invalid time stamp`),
+AAudio stops calling back, APU credits drain (~160 ms), the guest XAudio2 render callback stops,
+and the guest's level-load wait hangs forever.
+
+**Fix:** a liveness watchdog in `audio_system.cpp` pumps the mixer on a timer when no fill
+callback has arrived for 100 ms, keeping `on_frame_played()` credits flowing so the guest keeps
+loading even if the audio device dies. AAudio error codes are now logged.
+
+LOW_LATENCY audio mode was **kept** — switching to `NONE` avoided the dropout but caused
+stretching/crackling (the guest 256-frame callback misaligns with the buffer-queue burst).
+
+**Open:** skybox (outdoor screenshots confirm a sky renders, so likely area-specific), 30 FPS
+cap (user reports a guest-side options toggle that is off by default), Bathysphere cutscene (parked).
+
+---
+
+## `v0.0.6.5-perf-skybox-experimental` — previous release
 
 ## `v0.0.6.5-perf-skybox-experimental` — current release
 
