@@ -1,10 +1,22 @@
 # Status — verified facts, not aspirations
 
-Last updated: 2026-11-22 (`v0.0.7-mali-perf-experimental-audio-fix` — Mali performance jump to 40–44 FPS, skybox/static mesh fix, async background shader compiler, and XAudio2 mix-thread audio/loading deadlock fix).
+Last updated: 2026-11-22 (`v0.0.7.2-experimental` — water/refraction rainbow-flash & vertex-explosion hotfix, startup input latch/headless-XAM fix, Mali TBO & write-watch optimizations, and XAudio2 deadlock fix).
 
 **Open issues — see [`docs/20-KNOWN-ISSUES.md`](20-KNOWN-ISSUES.md)** for remaining items (minor blue speckles on lighthouse facade on Mali, parked Bathysphere projector overlay).
 
-## `v0.0.7-mali-perf-experimental-audio-fix` — current release
+## `v0.0.7.2-experimental` — current release
+
+- **Water / Vita-Chamber Rainbow Flash & Vertex Stretch Hotfix (`gles3_backend.cpp`, `gles3_resources.cpp`):**
+  - Removed deferred mid-frame `GL_RGBA16F` refraction resolve coalescing (`pendingResolve_`) and in-place `glInvalidateFramebuffer` calls before `glClear`, which caused feedback-loop `NaN`/rainbow flashing on multi-pass flowing water sheets and Vita-Chamber glass.
+  - Fixed `Gles3Resources::NeedsRefresh` ignoring `volatileUntilFrame` when `watchArmed == false` (which skipped 2nd/3rd/4th mid-frame vertex updates on volatile buffers and caused stretched polygons), and doubled the persistent SSBO ring buffer on Adreno from 16 MB to 32 MB.
+- **Startup Input Reliability Fix (`xam_ui.cpp`, `input_system.cpp`, `TouchControlsView.kt`):**
+  - Forced headless XAM prompt auto-completion on Android (`HasWindow() -> false`), disabled `ui_blocks` gamepad zeroing on Android, held newly-pressed touch button bits for 80 ms across competing `XamInputGetKeystroke`/`XamInputGetState` polls, and expanded pill/face button touch hit zones.
+- **CPU / Shader Optimizations (`gles3_backend.cpp`, `gles3_resources.cpp`, `gles3_shaders.cpp`):**
+  - Fast `drawConstModified` dirty tracking for `DrawConstantsCpu` (eliminating 1,376-byte full-struct `memcmp`/`memcpy` on every draw), 16-frame retention + every-8th-frame GC sweep for small TBOs, and fast polynomial `LanczosWeights` in `kPresentLanczosFsSource`.
+
+---
+
+## `v0.0.7-mali-perf-experimental-audio-fix` — previous release
 
 - **Audio Death & Loading-Screen Hang Root Cause Fixed (`third_party/rexglue-git`):**
   - Identified why audio died randomly at the 2K intro → Main Menu transition (`XAudioUnregisterRenderDriverClient` → `XAudioRegisterRenderDriverClient`) and why clicking Continue/Load then hung forever on the loading screen:

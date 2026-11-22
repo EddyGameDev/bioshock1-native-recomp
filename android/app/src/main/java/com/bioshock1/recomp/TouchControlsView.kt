@@ -295,10 +295,14 @@ class TouchControlsView(context: Context) : View(context) {
     private fun classify(x: Float, y: Float): String? {
         val lay = getLayout(width, height)
         for (p in lay.pills) {
-            if (p.rect.contains(x, y)) return "b${p.idx}"
+            if (x >= p.rect.left - 14f && x <= p.rect.right + 14f &&
+                y >= p.rect.top - 14f && y <= p.rect.bottom + 14f
+            ) {
+                return "b${p.idx}"
+            }
         }
         for (c in lay.circles) {
-            if (hypot(x - c.cx, y - c.cy) <= c.r * 1.15f) return "b${c.idx}"
+            if (hypot(x - c.cx, y - c.cy) <= c.r * 1.28f) return "b${c.idx}"
         }
         if (lay.dpad.hitRect.contains(x, y)) return "dpad"
         for (s in lay.sticks) {

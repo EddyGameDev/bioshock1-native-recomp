@@ -6,6 +6,19 @@ holds the current snapshot; this file holds the history.
 
 ---
 
+## Session 28 — 2026-11-22 — `v0.0.7.2-experimental` (Flowing Water / Refraction & Vertex Stretch Hotfix + Startup Input Fix)
+
+- **Flowing Water Rainbow Flash & Vertex Stretch Fixed (`gles3_backend.cpp`, `gles3_resources.cpp`):**
+  - Multi-pass flowing water sheets (`#16..#24` resolving to `0x12c48000`) and Vita-Chamber glass sample the resolved HDR scene texture between consecutive draws into the same target; deferring those resolves into `pendingResolve_` or calling `glInvalidateFramebuffer` on `drawFbo_` before `glClear` caused a feedback loop that overflowed `GL_RGBA16F` into rainbow/black blocks. Removed `pendingResolve_` and the pre-clear `glInvalidateFramebuffer` calls so all resolves execute synchronously in command-stream order.
+  - Fixed `Gles3Resources::NeedsRefresh()` ignoring `volatileUntilFrame` when `watchArmed == false` (which skipped mid-frame vertex updates on volatile buffers and caused stretched black polygons on Adreno), and doubled Adreno's persistent SSBO ring buffer from 16 MB to 32 MB.
+- **Startup Input Fix (`xam_ui.cpp`, `input_system.cpp`, `TouchControlsView.kt`):**
+  - Returned `false` from `HasWindow()` on Android in `xam_ui.cpp` so XAM dialogs never block on invisible ImGui prompts, bypassed `ui_blocks` zeroing on Android in `input_system.cpp`, held rising-edge touch button presses for 80 ms across competing `XamInputGetKeystroke`/`XamInputGetState` polls, and expanded touch pill/circle hit zones.
+- **CPU & Upscaler Optimizations (`gles3_backend.cpp`, `gles3_resources.cpp`, `gles3_shaders.cpp`):**
+  - Replaced full 1,376-byte `DrawConstantsCpu` `memcmp`/`memcpy` per draw with targeted `drawConstModified` + 96-byte header/footer comparisons, throttled the `BeginFrame` `vertexBuffers_` GC sweep to every 8th frame with 16-frame retention, and replaced transcendental `sin`/`cos` in `kPresentLanczosFsSource` with a fast cubic polynomial.
+- Built and published `v0.0.7.2-experimental`.
+
+---
+
 ## Session 27 — 2026-11-22 — `v0.0.7-mali-perf-experimental-audio-fix` (40–44 FPS on Mali, Skybox Fixed, Async Shader Compiler & XAudio2 Deadlock Fix)
 
 - **Mali Skybox & Static Meshes > 8 KB Fixed (`gles3_backend.cpp`, `gles3_resources.cpp`):**

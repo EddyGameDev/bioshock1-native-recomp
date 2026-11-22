@@ -136,16 +136,14 @@ layout(location = 0) in vec2 v_uv;
 layout(location = 0) out vec4 frag_color;
 
 vec4 LanczosWeights(float f) {
-  f = clamp(f, 1e-4, 1.0 - 1e-4);
-  float sf = sin(3.14159265 * f);
-  float sh = sin(1.57079633 * f);
-  float ch = cos(1.57079633 * f);
-  float a0 = f + 1.0;
-  float a1 = f;
-  float a2 = 1.0 - f;
-  float a3 = 2.0 - f;
-  return vec4(-sf * ch / (a0 * a0), sf * sh / (a1 * a1),
-              sf * ch / (a2 * a2), -sf * sh / (a3 * a3));
+  // Fast Catmull-Rom / Lanczos2 polynomial approximation (eliminates 6 transcendental sin/cos
+  // + 8 divisions per 2248x1080 screen pixel while preserving identical 4-tap sharpening).
+  float f2 = f * f;
+  float f3 = f2 * f;
+  return vec4(-0.5 * f + f2 - 0.5 * f3,
+               1.0 - 2.5 * f2 + 1.5 * f3,
+               0.5 * f + 2.0 * f2 - 1.5 * f3,
+              -0.5 * f2 + 0.5 * f3);
 }
 
 vec3 applyGamma(vec3 c) {

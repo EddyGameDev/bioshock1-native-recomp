@@ -749,7 +749,7 @@ void Gles3Resources::Initialize(rex::IPhysicalMemory* memory, rex::IPhysicalWrit
   auto glBufferStorageExt =
       reinterpret_cast<BufferStorageExtFn>(eglGetProcAddress("glBufferStorageEXT"));
   if (glBufferStorageExt && HasExtension(exts, "GL_EXT_buffer_storage")) {
-    size_t ringBytes = 16u * 1024u * 1024u;
+    size_t ringBytes = 32u * 1024u * 1024u;
     if (useVertexTextureBuffers_) {
       GLint maxTboTexels = 0;
       glGetIntegerv(GL_MAX_TEXTURE_BUFFER_SIZE, &maxTboTexels);
@@ -928,9 +928,8 @@ bool Gles3Resources::NeedsRefresh(uint32_t physStart, uint32_t physEnd, uint32_t
   }
   uploadSeq = curSeq;
   if (!watchArmed) {
-    return prevUsedFrame != frame_;
+    return (frame_ <= volatileUntilFrame) || (prevUsedFrame != frame_);
   }
-  (void)volatileUntilFrame;
   return false;
 }
 
@@ -1005,10 +1004,10 @@ bool Gles3Resources::BeginFrame(uint64_t frame) {
       }
       retiredTbos_.resize(writeIdx);
     }
-    if (vertexBuffers_.size() > 256u) {
-      // Reclaim 6+ frame-old small sliding ring VBs into freeTboPool_.
+    if ((frame_ & 7u) == 0u && vertexBuffers_.size() > 512u) {
+      // Reclaim 16+ frame-old small sliding ring VBs into freeTboPool_ every 8th frame.
       for (auto it = vertexBuffers_.begin(); it != vertexBuffers_.end();) {
-        const uint64_t ageLimit = (it->second.bytes <= 65536u) ? 6u : 300u;
+        const uint64_t ageLimit = (it->second.bytes <= 65536u) ? 16u : 300u;
         if (frame_ > it->second.lastFrame + ageLimit) {
           RecycleVertexBufferGl(it->second, true);
           it = vertexBuffers_.erase(it);
@@ -1610,7 +1609,6 @@ void Gles3Resources::UploadVertexTbo(VertexBuffer& vb, const uint8_t* ptr, uint3
     vb.tbo = p.tbo;
     glBindBuffer(GL_TEXTURE_BUFFER, vb.ssbo);
     glBufferSubData(GL_TEXTURE_BUFFER, 0, static_cast<GLsizeiptr>(exactSize), ptr);
-    glBindBuffer(GL_TEXTURE_BUFFER, 0);
     vb.bytes = exactSize;
     vb.cap = bucketCap;
     vb.uploadedBytes = exactSize;
