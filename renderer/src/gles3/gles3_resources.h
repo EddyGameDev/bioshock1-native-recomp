@@ -86,8 +86,10 @@ class Gles3Resources final : public rex::IPhysicalWriteListener {
 
   struct VertexBuffer {
     GLuint ssbo = 0;
+    GLuint tbo = 0;  // GL_TEXTURE_BUFFER texture for Mali (no VS SSBO)
     uint32_t address = 0;
     uint32_t bytes = 0;
+    uint32_t cap = 0;
     uint32_t uploadedBytes = 0;
     uint64_t fingerprint = 0;
     uint64_t lastFrame = 0;
@@ -117,6 +119,7 @@ class Gles3Resources final : public rex::IPhysicalWriteListener {
 
   void Initialize(rex::IPhysicalMemory* memory, rex::IPhysicalWriteWatch* watch);
   void Shutdown();
+  void SetUseVertexTextureBuffers(bool enabled) { useVertexTextureBuffers_ = enabled; }
 
   void RequestScale(float scale);
   float ActiveScale() const { return scale_; }
@@ -146,7 +149,7 @@ class Gles3Resources final : public rex::IPhysicalWriteListener {
                     bool& isCubeOut, const Resolved*& resolvedOut);
 
   GLuint VertexBufferFor(uint32_t address, uint32_t bytes, size_t& offsetOut,
-                         size_t& rangeSizeOut);
+                         size_t& rangeSizeOut, GLuint* tboOut = nullptr);
   /** Returns a cached GL_ELEMENT_ARRAY_BUFFER for static indexed draws, or 0 for dynamic/volatile. */
   GLuint StaticIndexBufferFor(uint32_t address, uint32_t count, bool wide, bool resetEnabled,
                               uint32_t resetIdx);
@@ -164,6 +167,16 @@ class Gles3Resources final : public rex::IPhysicalWriteListener {
   bool HasS3tc() const { return hasS3tc_; }
   bool HasRgtc() const { return hasRgtc_; }
   bool HasFloatLinear() const { return hasFloatLinear_; }
+  uint32_t TakeTboUploads() {
+    uint32_t v = tboUploads_;
+    tboUploads_ = 0;
+    return v;
+  }
+  uint32_t TakeTboNews() {
+    uint32_t v = tboNews_;
+    tboNews_ = 0;
+    return v;
+  }
 
  private:
   rex::PhysicalRange OnPhysicalWrite(rex::PhysicalRange range, bool exact) override;
@@ -178,6 +191,9 @@ class Gles3Resources final : public rex::IPhysicalWriteListener {
 
   void DestroyScaledTargets();
   void UploadTextureData(GuestTexture& tex, const uint32_t words[6]);
+  void UploadVertexTbo(VertexBuffer& vb, const uint8_t* ptr, uint32_t exactSize);
+  void RecycleVertexBufferGl(VertexBuffer& vb, bool allowPool);
+  static void DeleteVertexBufferGl(VertexBuffer& vb);
   uint32_t RowsForClass(uint32_t pitch, uint32_t cls) const;
   static GLenum GlColorFormat(uint32_t xenosFmt, uint32_t& bytesPerSample);
 
@@ -203,6 +219,26 @@ class Gles3Resources final : public rex::IPhysicalWriteListener {
   bool hasBorderClamp_ = false;
   bool hasMirrorClamp_ = false;
   bool hasFloatLinear_ = false;
+  bool useVertexTextureBuffers_ = false;
+  uint32_t tboUploads_ = 0;
+  uint32_t tboNews_ = 0;
+
+  struct TboPair {
+    GLuint buf = 0;
+    GLuint tbo = 0;
+  };
+  struct RetiredTbo {
+    uint64_t retiredFrame = 0;
+    uint32_t size = 0;
+    GLuint buf = 0;
+    GLuint tbo = 0;
+  };
+  // GPU-safe retired queue: buffers wait 6 full frames before entering freeTboPool_ so Mali
+  // never reads a buffer being overwritten by glBufferSubData (zero vertex flickering).
+  std::vector<RetiredTbo> retiredTbos_;
+  // Exact-size recycling pool of pre-attached (GL_BUFFER, GL_TEXTURE_BUFFER) pairs for Mali.
+  std::unordered_map<uint32_t, std::vector<TboPair>> freeTboPool_;
+  uint32_t freeTboPoolCount_ = 0;
 
   uint64_t frame_ = 0;
   std::unordered_map<uint64_t, uint32_t> classRows_;
@@ -227,9 +263,10 @@ class Gles3Resources final : public rex::IPhysicalWriteListener {
   uint64_t gammaVersion_ = 0;
   bool gammaValid_ = false;
 
-  // Persistent coherent mapped ring buffer for volatile/dynamic SSBO vertex buffers
-  // (eliminates per-draw glBufferSubData GPU pipeline stalls on Adreno).
+  // Persistent coherent mapped ring buffer for volatile/dynamic SSBO / TBO vertex buffers
+  // (eliminates per-draw glBufferSubData GPU pipeline stalls on both Adreno and Mali).
   GLuint vbRing_ = 0;
+  GLuint vbRingTbo_ = 0;
   uint8_t* vbRingPtr_ = nullptr;
   size_t vbRingSize_ = 16u * 1024u * 1024u;
   size_t vbRingOffset_ = 0;

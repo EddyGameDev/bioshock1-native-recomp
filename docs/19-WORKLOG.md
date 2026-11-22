@@ -6,6 +6,23 @@ holds the current snapshot; this file holds the history.
 
 ---
 
+## Session 27 — 2026-11-22 — `v0.0.7-mali-perf-experimental-audio-fix` (40–44 FPS on Mali, Skybox Fixed, Async Shader Compiler & XAudio2 Deadlock Fix)
+
+- **Mali Skybox & Static Meshes > 8 KB Fixed (`gles3_backend.cpp`, `gles3_resources.cpp`):**
+  - Fixed `if (vbRange == 0) return false;` on the Mali `VertexTextureBuffers()` path that dropped every static vertex buffer > 8 KB (restoring the outdoor skybox, moon, clouds, and static meshes).
+  - Added CPU BC4 (`fmt=59` → `GL_R8`) and BC5 (`fmt=49` → `GL_RG8`) block decoders for GPUs without `GL_EXT_texture_compression_rgtc`.
+- **Async Background Shared-EGLContext Shader Compiler (`gles3_shaders.h/.cpp`, `gles3_backend.cpp`):**
+  - Spawns a background worker thread with a shared `EGLContext` and 16×16 pbuffer so brand-new shader cache misses compile, link, and persist `.glesbin` off the render thread with zero frame stutter.
+- **Audio Death & Loading-Screen Hang Root Cause Fixed (`apu.h/.cpp`, `xboxkrnl_threading.cpp`, `xboxkrnl_rtl.cpp`, `sdl3_audio_driver.h/.cpp`, `audio_system.cpp`):**
+  - Traced the 2K intro → Main Menu audio death and subsequent loading-screen hang to a stale event signal on `0x82b2cd80` left behind when the old XAudio2 mix thread (`sub_82801400`) exited during `UnregisterClient`. `APU-WORKER` (`sub_82801580`) consumed the stale `0x82b2cd80` signal and cleared `*(engine + 300) = 0` before the new mix thread woke up, causing the new mix thread to exit immediately and leaving `APU-WORKER` deadlocked in `KeWaitForMultipleObjects({0x82b2cd80, 0x82b2cd5c})` while holding BioShock's global XAudio2 critical section (`0x82AB33A4`).
+  - Added `KeSetEvent(0x82b2cd90)` stale-reply clearing on `0x82b2cd80`, lost-wakeup recovery in `KeWaitForMultipleObjects`, `EventObject::Reset()` in `RtlInitializeCriticalSection`, callback completion synchronization in `APU::UnregisterClient`, 80 ms / 1-credit pacing in `APU::RegisterClient`, and detached non-blocking AAudio stream teardown.
+- **Mali Performance Optimizations (15–21 FPS → 40–44 FPS in Rapture on Mali-G78):**
+  - Added lossless deferred 3D refraction resolves (`pendingResolve_` in `gles3_backend.cpp`) that coalesce intermediate 3D depth-tested refraction resolves to `0x13458000` into a single TBDR tile pass and flush automatically before the first 2D post-process / Depth-of-Field draw.
+  - Added hardware `glCopyImageSubData` depth resolves (`GL_DEPTH24_STENCIL8` with `NearestClampSampler()`), 32-slot `TexSlotCache`, in-place `drawFbo_` clears, native 16-bit `GL_UNSIGNED_SHORT` static index buffers, mid-frame static mesh eviction protection, and a 5-bucket power-of-two 6-frame-retired TBO pool (`tboNews_ = 0` after warmup, zero vertex flashing).
+- Built and published main release `v0.0.7-mali-perf-experimental-audio-fix`.
+
+---
+
 ## Session 26 — 2026-11-21 — v0.0.6.5 perf + skybox investigation
 
 - Investigations found: (a) Perf Mode was a hidden no-op on the custom renderer (button

@@ -3,6 +3,7 @@
 #include <android/log.h>
 
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <cstring>
 
@@ -314,7 +315,8 @@ bool Gles3Backend::EnsureInitialized(rex::IPhysicalMemory* memory,
                                      rex::IPhysicalWriteWatch* watch) {
   if (!InitEgl()) return false;
   if (shaders_.PresentLanczosProgram() == 0) {
-    shaders_.Initialize(cacheDir_);
+    shaders_.Initialize(cacheDir_, display_, config_, context_);
+    resources_.SetUseVertexTextureBuffers(XenosGlsl::VertexTextureBuffers());
     resources_.Initialize(memory, watch);
   }
   UpdatePendingSurface();
@@ -425,8 +427,25 @@ void Gles3Backend::ShutdownOnGpuThread() {
 
 bool Gles3Backend::BeginFrame(uint64_t frame) {
   UpdatePendingSurface();
+  shaders_.PollCompleted();
+  if (resolveDumpActive_) {
+    resolveDumpActive_ = false;
+    resolveDumpDone_ = true;
+    GLESLOG("RES-DUMP: end frame=%llu totalResolves=%u",
+            static_cast<unsigned long long>(frame), frameResolves_);
+  } else if (!resolveDumpDone_ && frame > 250u && frameResolves_ >= 25u) {
+    resolveDumpActive_ = true;
+    GLESLOG("RES-DUMP: start frame=%llu", static_cast<unsigned long long>(frame));
+  }
+  frameResolves_ = 0;
   lastResolveKey_ = ResolveKey{};
   drawsSinceResolve_ = 0;
+  lastResolveDestBase_ = 0;
+  sameDestResolveStreak_ = 0;
+  only3DMeshDrawsSinceResolve_ = true;
+  pendingResolve_.valid = false;
+  std::memset(boundVbTex_, 0, sizeof(boundVbTex_));
+  ++resolveGen_;
   if (resources_.BeginFrame(frame)) {
     for (uint32_t i = 0; i < 4; ++i) lastFboColor_[i] = 0;
     lastFboDepth_ = 0;
@@ -434,6 +453,16 @@ bool Gles3Backend::BeginFrame(uint64_t frame) {
     return true;
   }
   return false;
+}
+
+void Gles3Backend::FlushPendingResolve() {
+  if (!pendingResolve_.valid) return;
+  pendingResolve_.valid = false;
+  ++resolveStats_.directCopy;
+  glCopyImageSubData(pendingResolve_.srcTex, GL_TEXTURE_2D, 0, pendingResolve_.srcX0,
+                     pendingResolve_.srcY0, 0, pendingResolve_.dstTex, GL_TEXTURE_2D, 0, 0, 0, 0,
+                     static_cast<GLsizei>(pendingResolve_.hostW),
+                     static_cast<GLsizei>(pendingResolve_.hostH), 1);
 }
 
 void Gles3Backend::UnbindTexturesMatching(GLuint tex) {
@@ -698,6 +727,18 @@ bool Gles3Backend::ExecuteDraw(const uint32_t* regs, uint32_t initiator, uint32_
   }
   if (colorCount == 0 && depthTex == 0) return false;
 
+  // Flush any deferred 3D refraction resolve the moment a 2D / post-process / Depth-of-Field / UI
+  // draw (!is3DMeshDraw) or a target switch arrives, so post-processing always receives the 100%
+  // complete transparent scene before sampling it.
+  const bool is3DMeshDraw =
+      ((depthControl & 2u) != 0) && !isRectClear && indexCount > 6u && colorCount == 1u;
+  if (pendingResolve_.valid && (!is3DMeshDraw || colorTex[0] != pendingResolve_.srcTex)) {
+    FlushPendingResolve();
+  }
+  if (!is3DMeshDraw) {
+    only3DMeshDrawsSinceResolve_ = false;
+  }
+
   uint32_t targetW = 0, targetH = 0;
   float scaleX = 1.0f, scaleY = 1.0f;
   uint32_t boundPitch = 0, boundRows = 0, boundMsaa = 0;
@@ -896,25 +937,55 @@ bool Gles3Backend::ExecuteDraw(const uint32_t* regs, uint32_t initiator, uint32_
   }
 
   // Bind textures & fill textureSize/textureAdjustment
+  const uint32_t curWriteSeq = resources_.CurrentWriteSeq();
   auto bindStageTextures = [&](const Gles3Shaders::Stage* st) {
     if (!st) return;
     for (const XenosGlsl::TextureFetch& fetch : st->textureFetches) {
       if (fetch.binding >= 24) continue;
-      uint32_t words[6] = {};
       const uint32_t base = kRegFetchConstants + fetch.slot * 6u;
-      for (uint32_t i = 0; i < 6; ++i) words[i] = regs[base + i];
+      const uint32_t* words = &regs[base];
+      const GLenum target = (fetch.dimension == 3u) ? GL_TEXTURE_CUBE_MAP : GL_TEXTURE_2D;
+
+      // Fast path: if this slot's 6 fetch words, guest writeSeq, and resolve generation
+      // are unchanged, reuse the cached GL texture/sampler and already-populated drawConst_!
+      if (fetch.slot < 32u) {
+        TexSlotCache& sc = texSlotCache_[fetch.slot];
+        if (sc.valid && sc.writeSeq == curWriteSeq && sc.resolveGen == resolveGen_ &&
+            std::memcmp(sc.words, words, 24u) == 0) {
+          GLuint tex = sc.tex;
+          for (uint32_t c = 0; c < 4; ++c) {
+            if (tex && tex == colorTex[c]) {
+              tex = sc.isCube ? resources_.WhiteTextureCube() : resources_.WhiteTexture2D();
+            }
+          }
+          if (tex && tex == depthTex) tex = resources_.WhiteTexture2D();
+          if (target == GL_TEXTURE_CUBE_MAP && !sc.isCube) tex = resources_.WhiteTextureCube();
+          if (target == GL_TEXTURE_2D && sc.isCube) tex = resources_.WhiteTexture2D();
+          if (boundTex_[fetch.binding] != tex || boundTexTarget_[fetch.binding] != target) {
+            glActiveTexture(GL_TEXTURE0 + fetch.binding);
+            glBindTexture(target, tex);
+            boundTex_[fetch.binding] = tex;
+            boundTexTarget_[fetch.binding] = target;
+          }
+          if (boundSampler_[fetch.binding] != sc.smp) {
+            glBindSampler(fetch.binding, sc.smp);
+            boundSampler_[fetch.binding] = sc.smp;
+          }
+          continue;
+        }
+      }
 
       uint32_t tw = 1, th = 1;
       bool isCube = false;
       const Gles3Resources::Resolved* rSurf = nullptr;
-      GLuint tex = resources_.TextureFor(words, tw, th, isCube, rSurf);
+      const GLuint rawTex = resources_.TextureFor(words, tw, th, isCube, rSurf);
+      GLuint tex = rawTex;
       // Never sample an attached FBO texture!
       for (uint32_t c = 0; c < 4; ++c) {
         if (tex && tex == colorTex[c]) tex = isCube ? resources_.WhiteTextureCube() : resources_.WhiteTexture2D();
       }
       if (tex && tex == depthTex) tex = resources_.WhiteTexture2D();
 
-      const GLenum target = (fetch.dimension == 3u) ? GL_TEXTURE_CUBE_MAP : GL_TEXTURE_2D;
       const GLuint texBeforeGuard = tex;
       if (target == GL_TEXTURE_CUBE_MAP && !isCube) tex = resources_.WhiteTextureCube();
       if (target == GL_TEXTURE_2D && isCube) tex = resources_.WhiteTexture2D();
@@ -933,7 +1004,7 @@ bool Gles3Backend::ExecuteDraw(const uint32_t* regs, uint32_t initiator, uint32_
         }
       }
 
-      const GLuint smp = (rSurf && rSurf->isDepth && !resources_.HasFloatLinear())
+      const GLuint smp = (rSurf && rSurf->isDepth)
                              ? resources_.NearestClampSampler()
                              : resources_.SamplerFor(words);
       if (boundTex_[fetch.binding] != tex || boundTexTarget_[fetch.binding] != target) {
@@ -948,6 +1019,15 @@ bool Gles3Backend::ExecuteDraw(const uint32_t* regs, uint32_t initiator, uint32_
       }
 
       if (fetch.slot < 32) {
+        TexSlotCache& sc = texSlotCache_[fetch.slot];
+        std::memcpy(sc.words, words, 24u);
+        sc.tex = rawTex;
+        sc.smp = smp;
+        sc.isCube = isCube;
+        sc.writeSeq = curWriteSeq;
+        sc.resolveGen = resolveGen_;
+        sc.valid = true;
+
         drawConst_.texSize[fetch.slot][0] = static_cast<float>(tw);
         drawConst_.texSize[fetch.slot][1] = static_cast<float>(th);
         drawConst_.texSize[fetch.slot][2] = tw > 0 ? 1.0f / static_cast<float>(tw) : 1.0f;
@@ -1057,40 +1137,26 @@ bool Gles3Backend::ExecuteDraw(const uint32_t* regs, uint32_t initiator, uint32_
     }
   }
 
-  // Bind vertex SSBOs
+  // Bind vertex SSBOs (Adreno) or cached GL_TEXTURE_BUFFERs (Mali)
   for (const XenosGlsl::VertexFetch& vf : vs->vertexFetches) {
     const uint32_t base = kRegFetchConstants + vf.slot * 2u;
     const uint32_t w0 = regs[base + 0];
     const uint32_t w1 = regs[base + 1];
     const uint32_t bytes = ((w1 >> 2) & 0xFFFFFFu) * 4u;
     size_t vbOff = 0, vbRange = 0;
-    GLuint ssbo = resources_.VertexBufferFor(w0 & ~3u, bytes, vbOff, vbRange);
+    GLuint vbTbo = 0;
+    GLuint ssbo = resources_.VertexBufferFor(w0 & ~3u, bytes, vbOff, vbRange, &vbTbo);
     if (!ssbo) return false;
     if (XenosGlsl::VertexTextureBuffers()) {
-      if (vf.binding >= 16u) return false;
-      if (vbRange == 0) return false;
-      GLuint& tex = vbTex_[vf.binding];
-      if (!tex) glGenTextures(1, &tex);
-      GLuint& storage = vbTexStorage_[vf.binding];
-      const GLsizei sz = static_cast<GLsizei>(vbRange);
-      if (storage == 0 || vbTexStorageSize_[vf.binding] != sz) {
-        // Never resize a buffer that is attached to a texture buffer — Mali's
-        // driver crashes in gles_texturep_prepare_texture_buffers when that
-        // happens. Use a fresh buffer object each time the size changes.
-        GLuint old = storage;
-        glGenBuffers(1, &storage);
-        glBindBuffer(GL_TEXTURE_BUFFER, storage);
-        glBufferData(GL_TEXTURE_BUFFER, sz, nullptr, GL_STREAM_DRAW);
-        vbTexStorageSize_[vf.binding] = sz;
+      if (vf.binding >= 16u || !vbTbo || vbRange < 4u) return false;
+      drawConst_.vbSlice[vf.binding][0] = static_cast<uint32_t>(vbOff >> 2);
+      drawConst_.vbSlice[vf.binding][1] = static_cast<uint32_t>((vbRange >> 2) - 1u);
+      drawConst_.vbSlice[vf.binding][2] = 0u;
+      drawConst_.vbSlice[vf.binding][3] = 0u;
+      if (boundVbTex_[vf.binding] != vbTbo) {
         glActiveTexture(GL_TEXTURE0 + vf.binding + 16u);
-        glBindTexture(GL_TEXTURE_BUFFER, tex);
-        glTexBuffer(GL_TEXTURE_BUFFER, GL_R32UI, storage);
-        if (old) glDeleteBuffers(1, &old);
-      }
-      const uint8_t* src = resources_.PhysicalPtr((w0 & ~3u) & 0x1FFFFFFFu, vbRange);
-      glBindBuffer(GL_TEXTURE_BUFFER, storage);
-      if (src) {
-        glBufferSubData(GL_TEXTURE_BUFFER, 0, static_cast<GLsizeiptr>(vbRange), src);
+        glBindTexture(GL_TEXTURE_BUFFER, vbTbo);
+        boundVbTex_[vf.binding] = vbTbo;
       }
       continue;
     }
@@ -1296,7 +1362,7 @@ bool Gles3Backend::ExecuteDraw(const uint32_t* regs, uint32_t initiator, uint32_
   }
 
   // Fast path: cached static index buffer for direct indexed draws (eliminates CPU byte-swap
-  // and glBufferSubData on ~95% of 3D mesh draws).
+  // and glBufferSubData on ~95% of 3D mesh draws; uses native 16-bit GL_UNSIGNED_SHORT when !wide).
   if (dmaIndexed && !convertQuads && !convertFan && !convertLineLoop) {
     const uint32_t resetVal = regs[kRegResetIndex];
     if (GLuint staticEbo = resources_.StaticIndexBufferFor(indexBase, indexCount, wideIndices,
@@ -1305,11 +1371,12 @@ bool Gles3Backend::ExecuteDraw(const uint32_t* regs, uint32_t initiator, uint32_
         glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, staticEbo);
         lastEbo_ = staticEbo;
       }
+      const GLenum idxType = wideIndices ? GL_UNSIGNED_INT : GL_UNSIGNED_SHORT;
       if (baseVertex != 0) {
-        glDrawElementsBaseVertex(glTopo, static_cast<GLsizei>(indexCount), GL_UNSIGNED_INT, nullptr,
+        glDrawElementsBaseVertex(glTopo, static_cast<GLsizei>(indexCount), idxType, nullptr,
                                  baseVertex);
       } else {
-        glDrawElements(glTopo, static_cast<GLsizei>(indexCount), GL_UNSIGNED_INT, nullptr);
+        glDrawElements(glTopo, static_cast<GLsizei>(indexCount), idxType, nullptr);
       }
       return true;
     }
@@ -1523,10 +1590,15 @@ bool Gles3Backend::ExecuteResolve(const uint32_t* regs) {
   lastResolveKey_ = key;
   lastResolveKey_.valid = isCopy && !colorClear && !depthClear;
   drawsSinceResolve_ = 0;
+  const bool wasOnly3DMeshDraws = only3DMeshDrawsSinceResolve_;
+  only3DMeshDrawsSinceResolve_ = true;
 
   bool didAny = false;
 
   // 1) Copy/resolve RT into GPU resolved texture
+  if (!isCopy || skipCopy) {
+    if (colorClear || depthClear) FlushPendingResolve();
+  }
   if (isCopy && !skipCopy) {
     const bool fromDepth = (sourceSelect == 4u);
     GLuint srcTex = 0;
@@ -1538,7 +1610,9 @@ bool Gles3Backend::ExecuteResolve(const uint32_t* regs) {
         srcTex = dt->tex;
         srcW = dt->width;
         srcH = dt->height;
-        dstFmt = GL_R32F;
+        // Match GL_DEPTH24_STENCIL8 so depth resolves use hardware glCopyImageSubData
+        // instead of an FBO switch + fullscreen shader pass (5x/frame).
+        dstFmt = GL_DEPTH24_STENCIL8;
       }
     } else {
       const uint32_t info = colorInfos[sourceSelect < 4u ? sourceSelect : 0u];
@@ -1554,6 +1628,7 @@ bool Gles3Backend::ExecuteResolve(const uint32_t* regs) {
     if (srcTex) {
       auto* dst = resources_.ResolvedFor(destBase, hostW, hostH, dstFmt, fromDepth);
       if (dst && dst->tex) {
+        ++resolveGen_;
         dst->guestWidth = width;
         dst->guestHeight = height;
         dst->rbSwapped = !fromDepth && (((destInfo >> 24) & 1u) != 0);
@@ -1594,21 +1669,64 @@ bool Gles3Backend::ExecuteResolve(const uint32_t* regs) {
         // (see bindStageTextures), which makes scaled resolves eligible for the fast
         // path too. Frontbuffers are covered as well: ExecutePresent applies the
         // stored bias via PresentParams::w before its final clamp.
-        const bool canDirectCopy = !fromDepth && boundsOk;
+        const bool canDirectCopy = boundsOk;
 
         if (fromDepth) ++resolveStats_.depth;
         else ++resolveStats_.color;
         resolveStats_.pixels += static_cast<uint64_t>(hostW) * hostH;
+        ++frameResolves_;
+        if (resolveDumpActive_) {
+          GLESLOG("RES-DUMP: #%u depth=%d src=%ux%u dst=%ux%u guest=%ux%u fmt=0x%x base=0x%08x draws=%u direct=%d",
+                  frameResolves_, fromDepth ? 1 : 0, srcW, srcH, hostW, hostH, width, height,
+                  dstFmt, destBase, drawsSinceResolve_, canDirectCopy ? 1 : 0);
+        }
 
-        if (canDirectCopy) {
-          ++resolveStats_.directCopy;
+        if (destBase == lastResolveDestBase_) {
+          ++sameDestResolveStreak_;
+        } else {
+          lastResolveDestBase_ = destBase;
+          sameDestResolveStreak_ = 0;
+        }
+        const bool canDefer3DRefraction =
+            canDirectCopy && !fromDepth && dstFmt == GL_RGBA16F && hostW >= 480u &&
+            !colorClear && !depthClear && sameDestResolveStreak_ >= 1u && wasOnly3DMeshDraws;
+
+        if (canDefer3DRefraction) {
+          if (pendingResolve_.valid) {
+            if (pendingResolve_.srcTex == srcTex && pendingResolve_.dstTex == dst->tex &&
+                pendingResolve_.hostW == hostW && pendingResolve_.hostH == hostH) {
+              ++resolveStats_.skipped;
+            } else {
+              FlushPendingResolve();
+            }
+          }
+          pendingResolve_ = PendingResolve{true, srcTex, dst->tex, srcX0, srcY0, hostW, hostH};
           dst->expBias = expBias;
           dst->clampMode = clampModeI;
+          didAny = true;
+        } else if (canDirectCopy) {
+          if (pendingResolve_.valid) {
+            if (pendingResolve_.srcTex == srcTex && pendingResolve_.dstTex == dst->tex &&
+                pendingResolve_.hostW == hostW && pendingResolve_.hostH == hostH) {
+              pendingResolve_.valid = false;
+              ++resolveStats_.skipped;
+            } else {
+              FlushPendingResolve();
+            }
+          }
+          ++resolveStats_.directCopy;
+          dst->expBias = fromDepth ? 0 : expBias;
+          dst->clampMode = fromDepth ? 0 : clampModeI;
           glCopyImageSubData(srcTex, GL_TEXTURE_2D, 0, srcX0, srcY0, 0,
                              dst->tex, GL_TEXTURE_2D, 0, 0, 0, 0,
                              static_cast<GLsizei>(hostW), static_cast<GLsizei>(hostH), 1);
           didAny = true;
         } else {
+          FlushPendingResolve();
+          if (fromDepth && dst->internalFormat == GL_DEPTH24_STENCIL8) {
+            dst = resources_.ResolvedFor(destBase, hostW, hostH, GL_R32F, true);
+            if (!dst || !dst->tex) return false;
+          }
           dst->expBias = 0;
           dst->clampMode = 0;
           UnbindTexturesMatching(dst->tex);
@@ -1693,22 +1811,51 @@ bool Gles3Backend::ExecuteResolve(const uint32_t* regs) {
   if (clearCt && !clearCt->tex) clearCt = nullptr;
   if (clearDt && !clearDt->tex) clearDt = nullptr;
 
+  // Fast in-place clear on drawFbo_ when the target(s) already match the active draw FBO
+  // (avoids splitting Mali's tiled render pass and avoids re-issuing 30+ GL state calls).
+  auto canUseDrawFbo = [&](GLuint wantColor, GLuint wantDepth) -> bool {
+    if (!drawFboBound_) return false;
+    if (lastFboColor_[1] != 0 || lastFboColor_[2] != 0 || lastFboColor_[3] != 0) return false;
+    if (wantColor && lastFboColor_[0] != wantColor) return false;
+    if (wantDepth && lastFboDepth_ != wantDepth) return false;
+    return true;
+  };
+  auto setClearScissor = [&]() {
+    if (!lastScissorEnabled_) {
+      glEnable(GL_SCISSOR_TEST);
+      lastScissorEnabled_ = true;
+    }
+    const int32_t sw = std::max(0, cx1 - cx0);
+    const int32_t sh = std::max(0, cy1 - cy0);
+    if (lastScissor_[0] != cx0 || lastScissor_[1] != cy0 || lastScissor_[2] != sw ||
+        lastScissor_[3] != sh) {
+      glScissor(cx0, cy0, sw, sh);
+      lastScissor_[0] = cx0;
+      lastScissor_[1] = cy0;
+      lastScissor_[2] = sw;
+      lastScissor_[3] = sh;
+    }
+  };
+
   if (clearCt && clearDt && clearCt->width == clearDt->width && clearCt->height == clearDt->height) {
     UnbindTexturesMatching(clearCt->tex);
     UnbindTexturesMatching(clearDt->tex);
-    drawFboBound_ = false;
-    stateDirty_ = true;
-    glBindFramebuffer(GL_FRAMEBUFFER, resolveFbo_);
-    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, clearCt->tex, 0);
-    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_DEPTH_STENCIL_ATTACHMENT, GL_TEXTURE_2D, clearDt->tex,
-                           0);
-    const GLenum db = GL_COLOR_ATTACHMENT0;
-    glDrawBuffers(1, &db);
-    glEnable(GL_SCISSOR_TEST);
-    glScissor(cx0, cy0, std::max(0, cx1 - cx0), std::max(0, cy1 - cy0));
+    if (!canUseDrawFbo(clearCt->tex, clearDt->tex)) {
+      drawFboBound_ = false;
+      glBindFramebuffer(GL_FRAMEBUFFER, resolveFbo_);
+      glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, clearCt->tex, 0);
+      glFramebufferTexture2D(GL_FRAMEBUFFER, GL_DEPTH_STENCIL_ATTACHMENT, GL_TEXTURE_2D,
+                             clearDt->tex, 0);
+      const GLenum db = GL_COLOR_ATTACHMENT0;
+      glDrawBuffers(1, &db);
+    }
+    setClearScissor();
     glColorMaski(0, GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
+    lastColorMask_ = ~0u;
     glDepthMask(GL_TRUE);
     glStencilMask(0xFFu);
+    lastDepthCtrl_ = ~0u;
+    lastStencilRef_ = ~0u;
     if (cx0 == 0 && cy0 == 0 && cx1 >= static_cast<int32_t>(clearCt->width) &&
         cy1 >= static_cast<int32_t>(clearCt->height)) {
       const GLenum inv[2] = {GL_COLOR_ATTACHMENT0, GL_DEPTH_STENCIL_ATTACHMENT};
@@ -1724,16 +1871,18 @@ bool Gles3Backend::ExecuteResolve(const uint32_t* regs) {
   } else {
     if (clearCt) {
       UnbindTexturesMatching(clearCt->tex);
-      drawFboBound_ = false;
-      stateDirty_ = true;
-      glBindFramebuffer(GL_FRAMEBUFFER, resolveFbo_);
-      glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, clearCt->tex, 0);
-      glFramebufferTexture2D(GL_FRAMEBUFFER, GL_DEPTH_STENCIL_ATTACHMENT, GL_TEXTURE_2D, 0, 0);
-      const GLenum db = GL_COLOR_ATTACHMENT0;
-      glDrawBuffers(1, &db);
-      glEnable(GL_SCISSOR_TEST);
-      glScissor(cx0, cy0, std::max(0, cx1 - cx0), std::max(0, cy1 - cy0));
+      if (!canUseDrawFbo(clearCt->tex, 0)) {
+        drawFboBound_ = false;
+        glBindFramebuffer(GL_FRAMEBUFFER, resolveFbo_);
+        glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, clearCt->tex,
+                               0);
+        glFramebufferTexture2D(GL_FRAMEBUFFER, GL_DEPTH_STENCIL_ATTACHMENT, GL_TEXTURE_2D, 0, 0);
+        const GLenum db = GL_COLOR_ATTACHMENT0;
+        glDrawBuffers(1, &db);
+      }
+      setClearScissor();
       glColorMaski(0, GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
+      lastColorMask_ = ~0u;
       if (cx0 == 0 && cy0 == 0 && cx1 >= static_cast<int32_t>(clearCt->width) &&
           cy1 >= static_cast<int32_t>(clearCt->height)) {
         const GLenum inv = GL_COLOR_ATTACHMENT0;
@@ -1748,16 +1897,18 @@ bool Gles3Backend::ExecuteResolve(const uint32_t* regs) {
 
     if (clearDt) {
       UnbindTexturesMatching(clearDt->tex);
-      drawFboBound_ = false;
-      stateDirty_ = true;
-      glBindFramebuffer(GL_FRAMEBUFFER, resolveFbo_);
-      glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, 0, 0);
-      glFramebufferTexture2D(GL_FRAMEBUFFER, GL_DEPTH_STENCIL_ATTACHMENT, GL_TEXTURE_2D,
-                             clearDt->tex, 0);
-      glEnable(GL_SCISSOR_TEST);
-      glScissor(cx0, cy0, std::max(0, cx1 - cx0), std::max(0, cy1 - cy0));
+      if (!canUseDrawFbo(0, clearDt->tex)) {
+        drawFboBound_ = false;
+        glBindFramebuffer(GL_FRAMEBUFFER, resolveFbo_);
+        glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, 0, 0);
+        glFramebufferTexture2D(GL_FRAMEBUFFER, GL_DEPTH_STENCIL_ATTACHMENT, GL_TEXTURE_2D,
+                               clearDt->tex, 0);
+      }
+      setClearScissor();
       glDepthMask(GL_TRUE);
       glStencilMask(0xFFu);
+      lastDepthCtrl_ = ~0u;
+      lastStencilRef_ = ~0u;
       if (cx0 == 0 && cy0 == 0 && cx1 >= static_cast<int32_t>(clearDt->width) &&
           cy1 >= static_cast<int32_t>(clearDt->height)) {
         const GLenum inv = GL_DEPTH_STENCIL_ATTACHMENT;
@@ -1776,6 +1927,7 @@ bool Gles3Backend::ExecuteResolve(const uint32_t* regs) {
 void Gles3Backend::ExecutePresent(uint32_t fbAddr, uint32_t fbWidth, uint32_t fbHeight,
                                   bool useLanczos, bool letterbox, bool vsync,
                                   const uint32_t* gammaLut, uint64_t gammaVersion, bool hasGamma) {
+  FlushPendingResolve();
   UpdatePendingSurface();
   if (surface_ == EGL_NO_SURFACE) return;
 

@@ -2,12 +2,19 @@
 
 #include "xenos_glsl.h"
 
+#include <EGL/egl.h>
 #include <GLES3/gl32.h>
 
+#include <atomic>
+#include <condition_variable>
 #include <cstdint>
+#include <deque>
 #include <filesystem>
+#include <mutex>
 #include <string>
+#include <thread>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 namespace bs1::renderer::gles3 {
@@ -36,8 +43,11 @@ class Gles3Shaders {
     bool usesKill = false;
   };
 
-  void Initialize(const std::filesystem::path& cacheDir);
+  void Initialize(const std::filesystem::path& cacheDir, EGLDisplay display = EGL_NO_DISPLAY,
+                  EGLConfig config = nullptr, EGLContext sharedContext = EGL_NO_CONTEXT);
   void Shutdown();
+  /** Drains asynchronously compiled programs from the background EGL thread into programs_. */
+  void PollCompleted();
 
   Handle Intern(const uint32_t* words, uint32_t count, bool pixel);
   void Select(Handle h, bool pixel) { current_[pixel ? 1 : 0] = h; }
@@ -97,12 +107,40 @@ class Gles3Shaders {
     }
   };
 
+  void CompileWorkerMain(EGLDisplay display, EGLConfig config, EGLContext sharedContext);
+
+  struct CompileJob {
+    ProgramKey key;
+    uint64_t vsHash = 0;
+    uint64_t psHash = 0;
+    bool rect = false;
+    bool alphaTest = false;
+    std::string vsGlsl;
+    std::string psGlsl;
+  };
+  struct CompletedProgram {
+    ProgramKey key;
+    GLuint prog = 0;
+  };
+
   std::filesystem::path cacheDir_;
   std::vector<Stage> stages_;
   std::unordered_map<uint64_t, Handle> byHash_;
   std::unordered_map<ProgramKey, GLuint, ProgramKeyHash> programs_;
   std::unordered_map<HashProgramKey, GLuint, HashProgramKeyHash> prewarmed_;
+  std::unordered_set<ProgramKey, ProgramKeyHash> inFlight_;
   Handle current_[2] = {0, 0};
+
+  // Shared-EGLContext background compiler thread (eliminates brand-new shader stutters).
+  std::thread compileThread_;
+  std::mutex compileMutex_;
+  std::condition_variable compileCv_;
+  std::deque<CompileJob> pendingJobs_;
+  bool compileStop_ = false;
+  bool asyncReady_ = false;
+  std::mutex completedMutex_;
+  std::vector<CompletedProgram> completedJobs_;
+  std::atomic<uint32_t> completedCount_{0};
 
   GLuint nullFs_ = 0;
   GLuint rectGs_ = 0;

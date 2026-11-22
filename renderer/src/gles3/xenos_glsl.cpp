@@ -479,14 +479,18 @@ struct Translator {
     // user function ("Function call discards 'readonly' access qualifier").
     // Stage the length and each loaded word in plain locals first, then only
     // pass those locals to helpers such as bswap()/uintBitsToFloat().
-    Line(useTB ? Format("uint vbLen = uint(textureSize(vb%u)) - 1u;", binding)
-               : Format("uint vbLen = uint(%s.length()) - 1u;", buf.c_str()));
+    if (useTB) {
+      Line(Format("uint vbBase = vbSlice[%u].x;", binding));
+      Line(Format("uint vbLen = vbSlice[%u].y;", binding));
+    } else {
+      Line(Format("uint vbLen = uint(%s.length()) - 1u;", buf.c_str()));
+    }
     uint32_t staged = 0;
     const auto stageLoad = [&](uint32_t delta) {
       const std::string name = Format("vfw%u", staged++);
       const std::string index = Format("min(fetchWordIdx + %uu, vbLen)", delta);
       if (useTB) {
-        Line(Format("uint %s = texelFetch(vb%u, int(%s)).x;", name.c_str(), binding,
+        Line(Format("uint %s = texelFetch(vb%u, int(vbBase + %s)).x;", name.c_str(), binding,
                     index.c_str()));
       } else {
         Line(Format("uint %s = %s[%s];", name.c_str(), buf.c_str(), index.c_str()));
@@ -1087,7 +1091,7 @@ void SetVertexTextureBuffers(bool enabled) { g_vertexTextureBuffers = enabled; }
 bool VertexTextureBuffers() { return g_vertexTextureBuffers; }
 
 uint64_t Version() {
-  static const char* const tag = "bs1-xenos-glsl-es320-v6-mali-tb-units";
+  static const char* const tag = "bs1-xenos-glsl-es320-v7-mali-ring-tbo";
   uint64_t hash = 14695981039346656037ULL;
   for (const char* p = tag; *p; ++p) {
     hash ^= static_cast<unsigned char>(*p);
@@ -1128,6 +1132,7 @@ Translation Translate(const std::vector<uint32_t>& words, bool pixel) {
       "    uvec4 textureAdjustment[32];\n"
       "    vec4 pixelGen;\n"
       "    vec4 colorExpBias;\n"
+      "    uvec4 vbSlice[16];\n"
       "};\n";
   glsl +=
       "uint bswap(uint v) { return (v >> 24u) | ((v >> 8u) & 0xFF00u) | ((v << 8u) & 0xFF0000u) | (v << 24u); }\n"

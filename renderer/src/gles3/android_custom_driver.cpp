@@ -413,16 +413,20 @@ void CustomXenosGraphicsDriver::WorkerLoop(std::stop_token stop) {
     if (now - lastReport >= std::chrono::seconds(10)) {
       const uint64_t curFrame = frameIndex_;
       const auto rs = backend_.GetResolveStats();
+      const auto db = backend_.GetDrawBreakdown();
       GLESLOG(
-          "PERF(10s): swaps=%llu batches=%u exec=%.1fms (draw=%.1f/%u res=%.1f/%u pres=%.1f wait=%.1f/%u lastWait=0x%X:%X/%X) "
-          "resolves=(color=%u depth=%u direct=%u skip=%u rej[s=%u c=%u b=%u] px=%llu) shaders=%u/%u",
+          "PERF(10s): swaps=%llu batches=%u exec=%.1fms (draw=%.1f/%u[s=%.0f t=%.0f v=%.0f u=%.0f c=%.0f] res=%.1f/%u pres=%.1f wait=%.1f/%u lastWait=0x%X:%X/%X) "
+          "resolves=(color=%u depth=%u direct=%u skip=%u rej[s=%u c=%u b=%u] px=%llu) shaders=%u/%u tboUp=%u/%u",
           static_cast<unsigned long long>(curFrame - lastFrameIdx), accBatches, accExecMs,
-          g_profDrawMs, g_profDraws, g_profResolveMs, g_profResolves, g_profPresentMs,
+          g_profDrawMs, g_profDraws, db.setupMs, db.texMs, db.vbMs, db.uboMs, db.callMs,
+          g_profResolveMs, g_profResolves, g_profPresentMs,
           g_profWaitMs, g_profWaits, g_lastWaitAddr, g_lastWaitVal, g_lastWaitRef,
           rs.color, rs.depth, rs.directCopy, rs.skipped, rs.rejectScale, rs.rejectClamp,
           rs.rejectBounds, static_cast<unsigned long long>(rs.pixels),
-          backend_.Shaders().CompiledProgramCount(), backend_.Shaders().BinaryCacheHits());
+          backend_.Shaders().CompiledProgramCount(), backend_.Shaders().BinaryCacheHits(),
+          backend_.Resources().TakeTboUploads(), backend_.Resources().TakeTboNews());
       backend_.ResetResolveStats();
+      backend_.ResetDrawBreakdown();
       lastFrameIdx = curFrame;
       accExecMs = 0.0;
       accBatches = 0;

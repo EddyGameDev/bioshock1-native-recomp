@@ -60,6 +60,16 @@ class Gles3Backend {
     uint32_t rejectBounds = 0;
     uint64_t pixels = 0;
   };
+  struct DrawBreakdown {
+    double setupMs = 0.0;
+    double texMs = 0.0;
+    double vbMs = 0.0;
+    double uboMs = 0.0;
+    double callMs = 0.0;
+  };
+  DrawBreakdown GetDrawBreakdown() const { return drawBreak_; }
+  void ResetDrawBreakdown() { drawBreak_ = DrawBreakdown{}; }
+
   ResolveStats GetResolveStats() const { return resolveStats_; }
   void ResetResolveStats() { resolveStats_ = ResolveStats{}; }
 
@@ -73,6 +83,7 @@ class Gles3Backend {
     uint32_t textureAdjustment[32][4];
     float pixelGen[4];
     float colorExpBias[4];
+    uint32_t vbSlice[16][4];  // .x = baseWord, .y = maxWordIdx (Mali ring TBO)
   };
 
   struct PresentParamsCpu {
@@ -141,16 +152,24 @@ class Gles3Backend {
   GLuint boundTex_[24] = {};
   GLenum boundTexTarget_[24] = {};
   GLuint boundSampler_[24] = {};
+  // Per-slot fetch-constant cache: skips TextureFor() + SamplerFor() + swizzle math
+  // when consecutive draws reuse the same 6 fetch words and no guest write/resolve occurred.
+  struct TexSlotCache {
+    uint32_t words[6] = {};
+    GLuint tex = 0;
+    GLuint smp = 0;
+    bool isCube = false;
+    uint32_t writeSeq = 0;
+    uint32_t resolveGen = 0;
+    bool valid = false;
+  };
+  TexSlotCache texSlotCache_[32] = {};
+  uint32_t resolveGen_ = 1;
   GLuint boundSsbo_[16] = {};
   size_t boundSsboOff_[16] = {};
   size_t boundSsboSize_[16] = {};
   // Texture-buffer fallback for GPUs with no vertex SSBO support (Mali).
-  GLuint vbTex_[16] = {};
-  GLuint vbTexStorage_[16] = {};
-  GLsizei vbTexStorageSize_[16] = {};
-  GLuint boundVbTexBuf_[16] = {};
-  size_t boundVbTexOff_[16] = {};
-  size_t boundVbTexSize_[16] = {};
+  GLuint boundVbTex_[16] = {};
   Gles3Shaders::Handle lastVsH_ = 0;
   Gles3Shaders::Handle lastPsH_ = 0;
   bool lastRectProg_ = false;
@@ -201,6 +220,7 @@ class Gles3Backend {
   float packedPsFloats_[256 * 4] = {};
 
   ResolveStats resolveStats_{};
+  DrawBreakdown drawBreak_{};
 
   // Consecutive identical EDRAM->host resolves with no intervening draw are redundant.
   struct ResolveKey {
@@ -223,6 +243,23 @@ class Gles3Backend {
   };
   ResolveKey lastResolveKey_{};
   uint32_t drawsSinceResolve_ = 0;
+  uint32_t lastResolveDestBase_ = 0;
+  uint32_t sameDestResolveStreak_ = 0;
+  bool only3DMeshDrawsSinceResolve_ = true;
+  struct PendingResolve {
+    bool valid = false;
+    GLuint srcTex = 0;
+    GLuint dstTex = 0;
+    int32_t srcX0 = 0;
+    int32_t srcY0 = 0;
+    uint32_t hostW = 0;
+    uint32_t hostH = 0;
+  };
+  PendingResolve pendingResolve_{};
+  void FlushPendingResolve();
+  uint32_t frameResolves_ = 0;
+  bool resolveDumpActive_ = false;
+  bool resolveDumpDone_ = true;
 };
 
 }  // namespace bs1::renderer::gles3

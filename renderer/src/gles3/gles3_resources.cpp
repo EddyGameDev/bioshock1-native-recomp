@@ -113,7 +113,7 @@ struct GlTexFmt {
   bool expand4444 = false;
   bool expand1555 = false;
   bool expand16ToFloat = false;
-  uint8_t dxtMode = 0;  // 0=none, 1=DXT1, 2=DXT3, 3=DXT5 (CPU-decoded on no-S3TC GPUs)
+  uint8_t dxtMode = 0;  // 0=none, 1=DXT1, 2=DXT3, 3=DXT5, 4=BC4(R8), 5=BC5(RG8)
   bool supported = false;
 };
 
@@ -283,17 +283,31 @@ GlTexFmt DescribeGlFormat(uint32_t fmt, bool hasS3tc, bool hasRgtc, bool hasNorm
       d.blockBytes = 16;
       d.supported = true;
       break;
-    case 49:  // k_DXN (BC5)
-      d.internalFormat = kGlCompressedRgRgtc2;
+    case 49:  // k_DXN (BC5 — normal maps)
       d.blockBytes = 16;
       d.compressed = true;
-      d.supported = hasRgtc;
+      d.supported = true;
+      if (hasRgtc) {
+        d.internalFormat = kGlCompressedRgRgtc2;
+      } else {
+        d.internalFormat = GL_RG8;
+        d.format = GL_RG;
+        d.type = GL_UNSIGNED_BYTE;
+        d.dxtMode = 5;
+      }
       break;
-    case 59:  // k_DXT5A (BC4)
-      d.internalFormat = kGlCompressedRedRgtc1;
+    case 59:  // k_DXT5A (BC4 — single-channel specular/light masks)
       d.blockBytes = 8;
       d.compressed = true;
-      d.supported = hasRgtc;
+      d.supported = true;
+      if (hasRgtc) {
+        d.internalFormat = kGlCompressedRedRgtc1;
+      } else {
+        d.internalFormat = GL_R8;
+        d.format = GL_RED;
+        d.type = GL_UNSIGNED_BYTE;
+        d.dxtMode = 4;
+      }
       break;
     default:
       break;
@@ -396,6 +410,37 @@ static void DecodeDxtBlock(const uint8_t* s, uint8_t mode, uint8_t* dst, uint32_
 
 
 
+// CPU BC4 single-channel block decoder (used for BC4/DXT5A -> R8 and BC5/DXN -> RG8 on Mali).
+static void DecodeBc4Channel(const uint8_t* s, uint8_t* dst, uint32_t bw, uint32_t bh,
+                             uint32_t stride, uint32_t pixelStep) {
+  const uint8_t a0 = s[0], a1 = s[1];
+  uint8_t lut[8];
+  lut[0] = a0;
+  lut[1] = a1;
+  if (a0 > a1) {
+    for (int i = 0; i < 6; ++i) {
+      lut[2 + i] = static_cast<uint8_t>(((6 - i) * a0 + (1 + i) * a1 + 3) / 7);
+    }
+  } else {
+    for (int i = 0; i < 4; ++i) {
+      lut[2 + i] = static_cast<uint8_t>(((4 - i) * a0 + (1 + i) * a1 + 2) / 5);
+    }
+    lut[6] = 0;
+    lut[7] = 255;
+  }
+  uint64_t indices = 0;
+  for (int b = 0; b < 6; ++b) {
+    indices |= static_cast<uint64_t>(s[2 + b]) << (b * 8);
+  }
+  for (uint32_t y = 0; y < bh; ++y) {
+    uint8_t* row = dst + static_cast<size_t>(y) * stride;
+    for (uint32_t x = 0; x < bw; ++x) {
+      const uint32_t p = y * 4u + x;
+      row[x * pixelStep] = lut[(indices >> (p * 3u)) & 7u];
+    }
+  }
+}
+
 size_t LinearizeLevel(const uint8_t* src, size_t maxBytes, const GlTexFmt& fmt, uint32_t endian,
                       uint32_t width, uint32_t height, uint32_t pitchTexels, bool tiled,
                       uint32_t x0, uint32_t y0, std::vector<uint8_t>& out) {
@@ -403,7 +448,10 @@ size_t LinearizeLevel(const uint8_t* src, size_t maxBytes, const GlTexFmt& fmt, 
     const uint32_t bw = (width + 3u) / 4u;
     const uint32_t bh = (height + 3u) / 4u;
     if (fmt.dxtMode) {
-      out.resize(static_cast<size_t>(width) * height * 4u);
+      const uint32_t outBpp = (fmt.dxtMode == 4u) ? 1u : (fmt.dxtMode == 5u) ? 2u : 4u;
+      const uint32_t outStride = width * outBpp;
+      out.resize(static_cast<size_t>(outStride) * height);
+      std::memset(out.data(), 0, out.size());
       const uint32_t pb = std::max(pitchTexels / 4u, 1u);
       const uint32_t pa = (pb + 31u) & ~31u;
       const uint32_t bpbLog2 = fmt.blockBytes == 8u ? 3u : 4u;
@@ -419,30 +467,19 @@ size_t LinearizeLevel(const uint8_t* src, size_t maxBytes, const GlTexFmt& fmt, 
           const uint32_t cw = std::min(4u, width - bx * 4u);
           const uint32_t ch = std::min(4u, height - by * 4u);
           uint8_t block[16];
-          // Match the working D3D11 path: Xenos DXT blocks are ALWAYS stored
+          // Match the working D3D11 path: Xenos DXT/BC4/BC5 blocks are ALWAYS stored
           // 16-bit byte-swapped regardless of the declared texture endian.
-          // Only swapping when endian==1||2 left sky/light cubemaps (e.g. fmt 19,
-          // endian 0/3) undecoded garbage on S3TC-less GPUs -> black sky/lights.
           Swap16Bytes8(block, src + off);
           if (fmt.blockBytes == 16u) Swap16Bytes8(block + 8, src + off + 8);
-          uint8_t* dstPx = out.data() + static_cast<size_t>(by * 4u) * width * 4u + bx * 16u;
-          DecodeDxtBlock(block, fmt.dxtMode, dstPx, cw, ch, width * 4u);
-          // Correct DXT diagnostic: uses the real (possibly tiled) offset and the
-          // actual decoded pixel written to out. Focus on the sky cube (mode 2).
-          {
-            static std::atomic<uint32_t> s_dxtRealLogs{0};
-            if (fmt.dxtMode == 2u && by == 0u && bx == 0u &&
-                s_dxtRealLogs.fetch_add(1, std::memory_order_relaxed) < 12u) {
-              GLESLOG("DXT-REAL mode=%u endian=%u tiled=%u %ux%u pitch=%u off=%llu "
-                      "raw=%02X%02X%02X%02X%02X%02X%02X%02X block=%02X%02X%02X%02X%02X%02X%02X%02X "
-                      "px=%02X%02X%02X%02X",
-                      fmt.dxtMode, endian, tiled ? 1u : 0u, width, height, pitchTexels,
-                      static_cast<unsigned long long>(off),
-                      src[off], src[off + 1], src[off + 2], src[off + 3],
-                      src[off + 4], src[off + 5], src[off + 6], src[off + 7],
-                      block[0], block[1], block[2], block[3], block[4], block[5], block[6],
-                      block[7], dstPx[0], dstPx[1], dstPx[2], dstPx[3]);
-            }
+          uint8_t* dstPx =
+              out.data() + static_cast<size_t>(by * 4u) * outStride + bx * 4u * outBpp;
+          if (fmt.dxtMode == 4u) {
+            DecodeBc4Channel(block, dstPx, cw, ch, outStride, 1u);
+          } else if (fmt.dxtMode == 5u) {
+            DecodeBc4Channel(block, dstPx, cw, ch, outStride, 2u);
+            DecodeBc4Channel(block + 8, dstPx + 1, cw, ch, outStride, 2u);
+          } else {
+            DecodeDxtBlock(block, fmt.dxtMode, dstPx, cw, ch, outStride);
           }
         }
       }
@@ -712,25 +749,43 @@ void Gles3Resources::Initialize(rex::IPhysicalMemory* memory, rex::IPhysicalWrit
   auto glBufferStorageExt =
       reinterpret_cast<BufferStorageExtFn>(eglGetProcAddress("glBufferStorageEXT"));
   if (glBufferStorageExt && HasExtension(exts, "GL_EXT_buffer_storage")) {
+    size_t ringBytes = 16u * 1024u * 1024u;
+    if (useVertexTextureBuffers_) {
+      GLint maxTboTexels = 0;
+      glGetIntegerv(GL_MAX_TEXTURE_BUFFER_SIZE, &maxTboTexels);
+      if (maxTboTexels > 0) {
+        const size_t maxBytes = (static_cast<size_t>(maxTboTexels) * 4u) & ~4095u;
+        ringBytes = std::min(ringBytes, maxBytes);
+      }
+      ssboAlign_ = 16u;  // 4-word aligned texel offsets for R32UI TBO
+    }
+    vbRingSize_ = ringBytes;
+    const GLenum ringTarget =
+        useVertexTextureBuffers_ ? GL_TEXTURE_BUFFER : GL_SHADER_STORAGE_BUFFER;
     constexpr GLbitfield kPersist = GL_MAP_WRITE_BIT | 0x0040u | 0x0080u;
     glGenBuffers(1, &vbRing_);
-    glBindBuffer(GL_SHADER_STORAGE_BUFFER, vbRing_);
-    glBufferStorageExt(GL_SHADER_STORAGE_BUFFER, static_cast<GLsizeiptr>(vbRingSize_), nullptr,
-                       kPersist);
+    glBindBuffer(ringTarget, vbRing_);
+    glBufferStorageExt(ringTarget, static_cast<GLsizeiptr>(vbRingSize_), nullptr, kPersist);
     vbRingPtr_ = static_cast<uint8_t*>(
-        glMapBufferRange(GL_SHADER_STORAGE_BUFFER, 0, static_cast<GLsizeiptr>(vbRingSize_),
-                         kPersist));
-    glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0);
+        glMapBufferRange(ringTarget, 0, static_cast<GLsizeiptr>(vbRingSize_), kPersist));
+    glBindBuffer(ringTarget, 0);
     if (!vbRingPtr_) {
       glDeleteBuffers(1, &vbRing_);
       vbRing_ = 0;
+    } else if (useVertexTextureBuffers_) {
+      glGenTextures(1, &vbRingTbo_);
+      glActiveTexture(GL_TEXTURE31);
+      glBindTexture(GL_TEXTURE_BUFFER, vbRingTbo_);
+      glTexBuffer(GL_TEXTURE_BUFFER, GL_R32UI, vbRing_);
+      glBindTexture(GL_TEXTURE_BUFFER, 0);
     }
   }
   vbRingOffset_ = 0;
   vbHalf_ = 0;
 
-  GLESLOG("Gles3Resources initialized (s3tc=%d rgtc=%d norm16=%d maxAniso=%.1f vbRing=%d)",
-          hasS3tc_, hasRgtc_, hasNorm16_, maxDeviceAniso_, vbRingPtr_ ? 1 : 0);
+  GLESLOG("Gles3Resources initialized (s3tc=%d rgtc=%d norm16=%d maxAniso=%.1f vbRing=%d vbRingTbo=%u sz=%zuMB)",
+          hasS3tc_, hasRgtc_, hasNorm16_, maxDeviceAniso_, vbRingPtr_ ? 1 : 0, vbRingTbo_,
+          vbRingSize_ >> 20);
 }
 
 void Gles3Resources::DestroyScaledTargets() {
@@ -756,9 +811,22 @@ void Gles3Resources::Shutdown() {
   }
   textures_.clear();
   for (auto& [k, vb] : vertexBuffers_) {
-    if (vb.ssbo) glDeleteBuffers(1, &vb.ssbo);
+    DeleteVertexBufferGl(vb);
   }
   vertexBuffers_.clear();
+  for (const auto& r : retiredTbos_) {
+    if (r.tbo) glDeleteTextures(1, &r.tbo);
+    if (r.buf) glDeleteBuffers(1, &r.buf);
+  }
+  retiredTbos_.clear();
+  for (auto& [sz, vec] : freeTboPool_) {
+    for (const auto& p : vec) {
+      if (p.tbo) glDeleteTextures(1, &p.tbo);
+      if (p.buf) glDeleteBuffers(1, &p.buf);
+    }
+  }
+  freeTboPool_.clear();
+  freeTboPoolCount_ = 0;
   for (auto& [k, ib] : indexBuffers_) {
     if (ib.ebo) glDeleteBuffers(1, &ib.ebo);
   }
@@ -777,11 +845,14 @@ void Gles3Resources::Shutdown() {
   for (int i = 0; i < 2; ++i) {
     if (vbHalfFence_[i]) { glDeleteSync(vbHalfFence_[i]); vbHalfFence_[i] = nullptr; }
   }
+  if (vbRingTbo_) { glDeleteTextures(1, &vbRingTbo_); vbRingTbo_ = 0; }
   if (vbRing_) {
     if (vbRingPtr_) {
-      glBindBuffer(GL_SHADER_STORAGE_BUFFER, vbRing_);
-      glUnmapBuffer(GL_SHADER_STORAGE_BUFFER);
-      glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0);
+      const GLenum ringTarget =
+          useVertexTextureBuffers_ ? GL_TEXTURE_BUFFER : GL_SHADER_STORAGE_BUFFER;
+      glBindBuffer(ringTarget, vbRing_);
+      glUnmapBuffer(ringTarget);
+      glBindBuffer(ringTarget, 0);
       vbRingPtr_ = nullptr;
     }
     glDeleteBuffers(1, &vbRing_);
@@ -914,11 +985,43 @@ bool Gles3Resources::BeginFrame(uint64_t frame) {
   frame_ = frame;
   // Periodically evict stale one-shot ring vertex buffers & unused textures so we never accumulate
   // thousands of Adreno kgsl mmap VMAs (Linux vm.max_map_count = 65530).
-  if ((frame_ & 15u) == 0u && vertexBuffers_.size() > 128u) {
+  if (useVertexTextureBuffers_) {
+    // Move retired buffers that are 6+ full frames old into freeTboPool_ (100% GPU-idle).
+    if (!retiredTbos_.empty()) {
+      size_t writeIdx = 0;
+      for (size_t i = 0; i < retiredTbos_.size(); ++i) {
+        const RetiredTbo& r = retiredTbos_[i];
+        if (frame_ >= r.retiredFrame + 6u) {
+          if (r.size > 0 && r.size <= 262144u && freeTboPoolCount_ < 2048u) {
+            freeTboPool_[r.size].push_back(TboPair{r.buf, r.tbo});
+            ++freeTboPoolCount_;
+          } else {
+            if (r.tbo) glDeleteTextures(1, &r.tbo);
+            if (r.buf) glDeleteBuffers(1, &r.buf);
+          }
+        } else {
+          retiredTbos_[writeIdx++] = r;
+        }
+      }
+      retiredTbos_.resize(writeIdx);
+    }
+    if (vertexBuffers_.size() > 256u) {
+      // Reclaim 6+ frame-old small sliding ring VBs into freeTboPool_.
+      for (auto it = vertexBuffers_.begin(); it != vertexBuffers_.end();) {
+        const uint64_t ageLimit = (it->second.bytes <= 65536u) ? 6u : 300u;
+        if (frame_ > it->second.lastFrame + ageLimit) {
+          RecycleVertexBufferGl(it->second, true);
+          it = vertexBuffers_.erase(it);
+        } else {
+          ++it;
+        }
+      }
+    }
+  } else if ((frame_ & 15u) == 0u && vertexBuffers_.size() > 512u) {
     uint32_t evicted = 0;
-    for (auto it = vertexBuffers_.begin(); it != vertexBuffers_.end() && evicted < 4u;) {
-      if (frame_ > it->second.lastFrame + 45u) {
-        if (it->second.ssbo) glDeleteBuffers(1, &it->second.ssbo);
+    for (auto it = vertexBuffers_.begin(); it != vertexBuffers_.end() && evicted < 8u;) {
+      if (frame_ > it->second.lastFrame + 300u) {
+        DeleteVertexBufferGl(it->second);
         it = vertexBuffers_.erase(it);
         ++evicted;
       } else {
@@ -1183,10 +1286,14 @@ Gles3Resources::Resolved* Gles3Resources::ResolvedFor(uint32_t base, uint32_t wi
   glBindTexture(GL_TEXTURE_2D, r.tex);
   glTexStorage2D(GL_TEXTURE_2D, 1, internalFormat, static_cast<GLsizei>(width),
                  static_cast<GLsizei>(height));
-  glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-  glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+  const GLenum filt = (internalFormat == GL_DEPTH24_STENCIL8) ? GL_NEAREST : GL_LINEAR;
+  glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, static_cast<GLint>(filt));
+  glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, static_cast<GLint>(filt));
   glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
   glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+  if (internalFormat == GL_DEPTH24_STENCIL8) {
+    glTexParameteri(GL_TEXTURE_2D, GL_DEPTH_STENCIL_TEXTURE_MODE, GL_DEPTH_COMPONENT);
+  }
   glBindTexture(GL_TEXTURE_2D, 0);
 
   auto [ins, _] = resolved_.insert_or_assign(addr, r);
@@ -1202,7 +1309,16 @@ const Gles3Resources::Resolved* Gles3Resources::ResolvedAt(uint32_t base) const 
 void Gles3Resources::UploadTextureData(GuestTexture& tex, const uint32_t words[6]) {
   const uint32_t fmtId = words[1] & 0x3Fu;
   const GlTexFmt fmt = DescribeGlFormat(fmtId, hasS3tc_, hasRgtc_, hasNorm16_);
-  if (!fmt.supported) return;
+  if (!fmt.supported) {
+    static std::atomic<uint64_t> s_warnedFmt{0};
+    const uint64_t bit = 1ULL << (fmtId & 63u);
+    if ((s_warnedFmt.fetch_or(bit, std::memory_order_relaxed) & bit) == 0) {
+      GLESLOG("TEX-UNSUP unsupported texture fmt=%u (%ux%u dim=%u)", fmtId,
+              (words[2] & 0x1FFFu) + 1u, ((words[2] >> 13) & 0x1FFFu) + 1u,
+              (words[5] >> 9) & 3u);
+    }
+    return;
+  }
 
   const uint32_t dimension = (words[5] >> 9) & 3u;
   const bool isCube = (dimension == 3u);
@@ -1295,7 +1411,7 @@ void Gles3Resources::UploadTextureData(GuestTexture& tex, const uint32_t words[6
                                   static_cast<GLsizei>(texH), fmt.internalFormat,
                                   static_cast<GLsizei>(bytes), texScratch_.data());
       } else {
-        const GLenum ifmt = fmt.dxtMode ? GL_RGBA : fmt.format;
+        const GLenum ifmt = (fmt.dxtMode >= 1u && fmt.dxtMode <= 3u) ? GL_RGBA : fmt.format;
         const GLenum type = fmt.dxtMode ? GL_UNSIGNED_BYTE : fmt.type;
         glTexSubImage2D(uploadTarget, 0, 0, 0, static_cast<GLsizei>(width),
                         static_cast<GLsizei>(height), ifmt, type, texScratch_.data());
@@ -1319,7 +1435,7 @@ void Gles3Resources::UploadTextureData(GuestTexture& tex, const uint32_t words[6
                                   fmt.internalFormat, static_cast<GLsizei>(bytes),
                                   texScratch_.data());
       } else {
-        const GLenum ifmt = fmt.dxtMode ? GL_RGBA : fmt.format;
+        const GLenum ifmt = (fmt.dxtMode >= 1u && fmt.dxtMode <= 3u) ? GL_RGBA : fmt.format;
         const GLenum type = fmt.dxtMode ? GL_UNSIGNED_BYTE : fmt.type;
         glTexSubImage2D(GL_TEXTURE_2D, static_cast<GLint>(level), 0, 0,
                         static_cast<GLsizei>(w), static_cast<GLsizei>(h), ifmt, type,
@@ -1434,10 +1550,95 @@ GLuint Gles3Resources::TextureFor(const uint32_t words[6], uint32_t& widthOut, u
   return t.tex ? t.tex : (isCubeOut ? whiteTexCube_ : whiteTex2D_);
 }
 
+void Gles3Resources::DeleteVertexBufferGl(VertexBuffer& vb) {
+  if (vb.tbo) glDeleteTextures(1, &vb.tbo);
+  if (vb.ssbo) glDeleteBuffers(1, &vb.ssbo);
+  vb.tbo = 0;
+  vb.ssbo = 0;
+}
+
+static uint32_t TboBucketCap(uint32_t exactSize) {
+  if (exactSize <= 1024u) return 1024u;
+  if (exactSize <= 4096u) return 4096u;
+  if (exactSize <= 16384u) return 16384u;
+  if (exactSize <= 65536u) return 65536u;
+  if (exactSize <= 262144u) return 262144u;
+  return exactSize;
+}
+
+void Gles3Resources::RecycleVertexBufferGl(VertexBuffer& vb, bool allowPool) {
+  if (vb.ssbo && vb.tbo && useVertexTextureBuffers_) {
+    const uint32_t poolCap = vb.cap ? vb.cap : vb.bytes;
+    if (allowPool && poolCap > 0 && poolCap <= 262144u && freeTboPoolCount_ < 2048u) {
+      freeTboPool_[poolCap].push_back(TboPair{vb.ssbo, vb.tbo});
+      ++freeTboPoolCount_;
+      vb.ssbo = 0;
+      vb.tbo = 0;
+      return;
+    }
+    // Not safe to pool immediately — retire for 6 frames before pooling/deleting.
+    retiredTbos_.push_back(RetiredTbo{frame_, poolCap, vb.ssbo, vb.tbo});
+    vb.ssbo = 0;
+    vb.tbo = 0;
+    return;
+  }
+  DeleteVertexBufferGl(vb);
+}
+
+void Gles3Resources::UploadVertexTbo(VertexBuffer& vb, const uint8_t* ptr, uint32_t exactSize) {
+  ++tboUploads_;
+  // Always retire the previous (ssbo, tbo) for 6 full frames instead of overwriting in-flight
+  // Mali draws (fixes vertex flickering when a buffer is updated multiple times per frame).
+  if (vb.ssbo && vb.tbo) {
+    const uint32_t oldCap = vb.cap ? vb.cap : vb.bytes;
+    retiredTbos_.push_back(RetiredTbo{frame_, oldCap, vb.ssbo, vb.tbo});
+    vb.ssbo = 0;
+    vb.tbo = 0;
+  } else {
+    DeleteVertexBufferGl(vb);
+  }
+
+  // Round capacity to 5 power-of-two size classes (1KB..256KB) so dynamic VBs with varying
+  // vertex counts hit freeTboPool_ ~100% of the time (tboNews_ -> 0). Shaders clamp to
+  // vbSlice[binding].y = (vb.bytes >> 2) - 1, so vb.bytes stays exactSize.
+  const uint32_t bucketCap = TboBucketCap(exactSize);
+  if (auto pit = freeTboPool_.find(bucketCap); pit != freeTboPool_.end() && !pit->second.empty()) {
+    TboPair p = pit->second.back();
+    pit->second.pop_back();
+    --freeTboPoolCount_;
+    vb.ssbo = p.buf;
+    vb.tbo = p.tbo;
+    glBindBuffer(GL_TEXTURE_BUFFER, vb.ssbo);
+    glBufferSubData(GL_TEXTURE_BUFFER, 0, static_cast<GLsizeiptr>(exactSize), ptr);
+    glBindBuffer(GL_TEXTURE_BUFFER, 0);
+    vb.bytes = exactSize;
+    vb.cap = bucketCap;
+    vb.uploadedBytes = exactSize;
+    return;
+  }
+
+  ++tboNews_;
+  glGenTextures(1, &vb.tbo);
+  glGenBuffers(1, &vb.ssbo);
+  glBindBuffer(GL_TEXTURE_BUFFER, vb.ssbo);
+  glBufferData(GL_TEXTURE_BUFFER, static_cast<GLsizeiptr>(bucketCap), nullptr,
+               bucketCap <= 262144u ? GL_DYNAMIC_DRAW : GL_STATIC_DRAW);
+  glBufferSubData(GL_TEXTURE_BUFFER, 0, static_cast<GLsizeiptr>(exactSize), ptr);
+  glActiveTexture(GL_TEXTURE31);
+  glBindTexture(GL_TEXTURE_BUFFER, vb.tbo);
+  glTexBuffer(GL_TEXTURE_BUFFER, GL_R32UI, vb.ssbo);
+  glBindTexture(GL_TEXTURE_BUFFER, 0);
+  glBindBuffer(GL_TEXTURE_BUFFER, 0);
+  vb.bytes = exactSize;
+  vb.cap = bucketCap;
+  vb.uploadedBytes = exactSize;
+}
+
 GLuint Gles3Resources::VertexBufferFor(uint32_t address, uint32_t bytes, size_t& offsetOut,
-                                       size_t& rangeSizeOut) {
+                                       size_t& rangeSizeOut, GLuint* tboOut) {
   offsetOut = 0;
   rangeSizeOut = 0;
+  if (tboOut) *tboOut = 0;
   const uint32_t phys = address & kPhysicalMask;
   const uint32_t size = std::max<uint32_t>((bytes + 15u) & ~15u, 16u);
   if (phys == 0) return 0;
@@ -1466,31 +1667,34 @@ GLuint Gles3Resources::VertexBufferFor(uint32_t address, uint32_t bytes, size_t&
     vbRingOffset_ = off + len;
     offsetOut = off;
     rangeSizeOut = len;
+    if (tboOut && useVertexTextureBuffers_) *tboOut = vbRingTbo_;
     return vbRing_;
   };
 
   // Fast path: tiny dynamic vertex buffers (<= 8 KB: particles, UI quads, decals) stream directly
-  // into the persistent coherent SSBO ring with ZERO glBufferSubData stalls and ZERO map lookups!
-  if (size <= 8192u && vbRingPtr_) {
+  // into the persistent coherent SSBO ring on Adreno. On Mali (useVertexTextureBuffers_),
+  // persistent-mapped TBO writes are not TMU-cache-coherent across mid-frame updates (causes
+  // vertex flashing), so Mali always uses the (phys, size) cache + 6-frame retiredTbos_ pool.
+  const bool ringUsable = vbRingPtr_ && !useVertexTextureBuffers_;
+  if (size <= 8192u && ringUsable) {
     return allocVbRing(ptr, size);
   }
 
-  const uint64_t key = static_cast<uint64_t>(phys);
+  // On Mali (TBOs), key by (phys, size) so sub-draws sharing a base address with different
+  // sizes stay independently cached instead of ping-ponging UploadVertexTbo() every draw!
+  const uint64_t key = useVertexTextureBuffers_
+                           ? ((static_cast<uint64_t>(phys) << 24) | ((size >> 4) & 0xFFFFFFu))
+                           : static_cast<uint64_t>(phys);
   auto it = vertexBuffers_.find(key);
   if (it != vertexBuffers_.end()) {
     VertexBuffer& vb = it->second;
     const uint64_t prevUsedFrame = vb.lastFrame;
     vb.lastFrame = frame_;
-    const uint32_t wanted = std::max(size, vb.uploadedBytes);
-    if (frame_ <= vb.volatileUntilFrame && size <= 65536u && vbRingPtr_) {
+    const uint32_t wanted = useVertexTextureBuffers_ ? size : std::max(size, vb.uploadedBytes);
+    if (frame_ <= vb.volatileUntilFrame && size <= 65536u && ringUsable) {
       return allocVbRing(ptr, size);
     }
-    if (wanted > vb.bytes) {
-      const uint32_t newCap = (wanted + wanted / 4u + 4095u) & ~4095u;
-      const uint32_t uploadLen =
-          static_cast<uint32_t>(std::min<size_t>(newCap, physSize_ - phys));
-      vb.bytes = newCap;
-      vb.uploadedBytes = wanted;
+    if (useVertexTextureBuffers_ ? (wanted != vb.bytes || vb.tbo == 0) : (wanted > vb.bytes)) {
       vb.uploadSeq = writeSeq_.load(std::memory_order_acquire);
       vb.fingerprint = Fingerprint(ptr, wanted);
       vb.lastCheckedFrame = frame_;
@@ -1498,6 +1702,17 @@ GLuint Gles3Resources::VertexBufferFor(uint32_t address, uint32_t bytes, size_t&
         ArmWatch(phys, wanted);
         vb.watchArmed = true;
       }
+      if (useVertexTextureBuffers_) {
+        UploadVertexTbo(vb, ptr, wanted);
+        if (tboOut) *tboOut = vb.tbo;
+        rangeSizeOut = vb.bytes;
+        return vb.ssbo;
+      }
+      const uint32_t newCap = (wanted + wanted / 4u + 4095u) & ~4095u;
+      const uint32_t uploadLen =
+          static_cast<uint32_t>(std::min<size_t>(newCap, physSize_ - phys));
+      vb.bytes = newCap;
+      vb.uploadedBytes = wanted;
       glBindBuffer(GL_SHADER_STORAGE_BUFFER, vb.ssbo);
       glBufferData(GL_SHADER_STORAGE_BUFFER, static_cast<GLsizeiptr>(newCap), nullptr,
                    GL_DYNAMIC_DRAW);
@@ -1533,31 +1748,37 @@ GLuint Gles3Resources::VertexBufferFor(uint32_t address, uint32_t bytes, size_t&
             vb.volatileUntilFrame = frame_ + 180u;
             vb.stableCount = 0;
           }
-          if (size <= 65536u && vbRingPtr_) {
+          if (size <= 65536u && ringUsable) {
             return allocVbRing(ptr, size);
           }
         }
         vb.uploadedBytes = wanted;
         vb.fingerprint = fp;
-        glBindBuffer(GL_SHADER_STORAGE_BUFFER, vb.ssbo);
-        // Orphan before upload so Adreno never stalls waiting on in-flight draws
-        glBufferData(GL_SHADER_STORAGE_BUFFER, static_cast<GLsizeiptr>(vb.bytes), nullptr,
-                     GL_DYNAMIC_DRAW);
-        glBufferSubData(GL_SHADER_STORAGE_BUFFER, 0, static_cast<GLsizeiptr>(wanted), ptr);
-        glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0);
+        if (useVertexTextureBuffers_) {
+          UploadVertexTbo(vb, ptr, wanted);
+        } else {
+          glBindBuffer(GL_SHADER_STORAGE_BUFFER, vb.ssbo);
+          // Orphan before upload so Adreno never stalls waiting on in-flight draws
+          glBufferData(GL_SHADER_STORAGE_BUFFER, static_cast<GLsizeiptr>(vb.bytes), nullptr,
+                       GL_DYNAMIC_DRAW);
+          glBufferSubData(GL_SHADER_STORAGE_BUFFER, 0, static_cast<GLsizeiptr>(wanted), ptr);
+          glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0);
+        }
       } else if (!watch_ && vb.stableCount < 16u) {
         ++vb.stableCount;
       }
     }
+    if (tboOut) *tboOut = vb.tbo;
+    if (useVertexTextureBuffers_) rangeSizeOut = vb.bytes;
     return vb.ssbo;
   }
 
-  // Hard cap live SSBO count so even rapid ring-buffer sub-allocations within a frame never
-  // exhaust Adreno kgsl mmap slots.
-  if (vertexBuffers_.size() >= 1024u) {
+  // Hard cap live SSBO/TBO count so rapid ring-buffer sub-allocations never exhaust mmap slots,
+  // while NEVER evicting active static level meshes used on frame_ or frame_ - 1!
+  if (vertexBuffers_.size() >= 4096u) {
     for (auto vit = vertexBuffers_.begin(); vit != vertexBuffers_.end();) {
-      if (vit->second.lastFrame < frame_) {
-        if (vit->second.ssbo) glDeleteBuffers(1, &vit->second.ssbo);
+      if (vit->second.lastFrame + 2u < frame_) {
+        RecycleVertexBufferGl(vit->second, frame_ >= vit->second.lastFrame + 6u);
         vit = vertexBuffers_.erase(vit);
       } else {
         ++vit;
@@ -1565,13 +1786,8 @@ GLuint Gles3Resources::VertexBufferFor(uint32_t address, uint32_t bytes, size_t&
     }
   }
 
-  const uint32_t allocCap = (size + size / 8u + 4095u) & ~4095u;
-  const uint32_t uploadLen =
-      static_cast<uint32_t>(std::min<size_t>(allocCap, physSize_ - phys));
   VertexBuffer& vb = vertexBuffers_[key];
   vb.address = phys;
-  vb.bytes = allocCap;
-  vb.uploadedBytes = size;
   vb.uploadSeq = writeSeq_.load(std::memory_order_acquire);
   vb.fingerprint = Fingerprint(ptr, size);
   vb.lastFrame = frame_;
@@ -1580,6 +1796,17 @@ GLuint Gles3Resources::VertexBufferFor(uint32_t address, uint32_t bytes, size_t&
     ArmWatch(phys, size);
     vb.watchArmed = true;
   }
+  if (useVertexTextureBuffers_) {
+    UploadVertexTbo(vb, ptr, size);
+    if (tboOut) *tboOut = vb.tbo;
+    rangeSizeOut = vb.bytes;
+    return vb.ssbo;
+  }
+  const uint32_t allocCap = (size + size / 8u + 4095u) & ~4095u;
+  const uint32_t uploadLen =
+      static_cast<uint32_t>(std::min<size_t>(allocCap, physSize_ - phys));
+  vb.bytes = allocCap;
+  vb.uploadedBytes = size;
   glGenBuffers(1, &vb.ssbo);
   glBindBuffer(GL_SHADER_STORAGE_BUFFER, vb.ssbo);
   glBufferData(GL_SHADER_STORAGE_BUFFER, static_cast<GLsizeiptr>(allocCap), nullptr,
@@ -1592,7 +1819,7 @@ GLuint Gles3Resources::VertexBufferFor(uint32_t address, uint32_t bytes, size_t&
 GLuint Gles3Resources::StaticIndexBufferFor(uint32_t address, uint32_t count, bool wide,
                                             bool resetEnabled, uint32_t resetIdx) {
   const uint32_t phys = address & kPhysicalMask;
-  if (phys == 0 || count < 64u) return 0;
+  if (phys == 0 || count < 12u) return 0;
   const uint32_t elemBytes = wide ? 4u : 2u;
   const uint32_t rawBytes = count * elemBytes;
   const uint8_t* ptr = PhysicalPtr(phys, rawBytes);
@@ -1647,26 +1874,38 @@ GLuint Gles3Resources::StaticIndexBufferFor(uint32_t address, uint32_t count, bo
       }
       if (++ib.stableCount < 2u) return 0;
 
-      idxScratch_.resize(count);
       if (wide) {
+        idxScratch_.resize(count);
         const auto* src = reinterpret_cast<const uint32_t*>(ptr);
         const uint32_t r = resetIdx & 0xFFFFFFu;
         for (uint32_t i = 0; i < count; ++i) {
           const uint32_t idx = ByteSwap32(src[i]) & 0xFFFFFFu;
           idxScratch_[i] = (resetEnabled && idx == r) ? 0xFFFFFFFFu : idx;
         }
+        glGenBuffers(1, &ib.ebo);
+        glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, ib.ebo);
+        glBufferData(GL_ELEMENT_ARRAY_BUFFER, static_cast<GLsizeiptr>(count) * 4,
+                     idxScratch_.data(), GL_STATIC_DRAW);
       } else {
+        idxScratch_.resize((count + 1u) / 2u);
+        auto* dst16 = reinterpret_cast<uint16_t*>(idxScratch_.data());
         const auto* src = reinterpret_cast<const uint16_t*>(ptr);
-        const uint32_t r = resetIdx & 0xFFFFu;
-        for (uint32_t i = 0; i < count; ++i) {
-          const uint32_t idx = ByteSwap16(src[i]);
-          idxScratch_[i] = (resetEnabled && idx == r) ? 0xFFFFFFFFu : idx;
+        const uint16_t r = static_cast<uint16_t>(resetIdx & 0xFFFFu);
+        if (resetEnabled) {
+          for (uint32_t i = 0; i < count; ++i) {
+            const uint16_t idx = ByteSwap16(src[i]);
+            dst16[i] = (idx == r) ? 0xFFFFu : idx;
+          }
+        } else {
+          for (uint32_t i = 0; i < count; ++i) {
+            dst16[i] = ByteSwap16(src[i]);
+          }
         }
+        glGenBuffers(1, &ib.ebo);
+        glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, ib.ebo);
+        glBufferData(GL_ELEMENT_ARRAY_BUFFER, static_cast<GLsizeiptr>(count) * 2,
+                     dst16, GL_STATIC_DRAW);
       }
-      glGenBuffers(1, &ib.ebo);
-      glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, ib.ebo);
-      glBufferData(GL_ELEMENT_ARRAY_BUFFER, static_cast<GLsizeiptr>(count) * 4,
-                   idxScratch_.data(), GL_STATIC_DRAW);
       ib.uploadSeq = writeSeq_.load(std::memory_order_acquire);
       if (watch_) {
         ArmWatch(phys, rawBytes);

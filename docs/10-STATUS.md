@@ -1,12 +1,31 @@
 # Status — verified facts, not aspirations
 
-Last updated: 2026-11-21 (`v0.0.6.6-audio-load-fix-experimental` — audio liveness watchdog; Adreno/Windows unchanged).
+Last updated: 2026-11-22 (`v0.0.7-mali-perf-experimental-audio-fix` — Mali performance jump to 40–44 FPS, skybox/static mesh fix, async background shader compiler, and XAudio2 mix-thread audio/loading deadlock fix).
 
-**Open issues — see [`docs/20-KNOWN-ISSUES.md`](20-KNOWN-ISSUES.md)** for detailed,
-evidence-backed diagnosis of the missing skybox/dark scene, the random audio death +
-load stall, the 30 FPS cap, and the parked cutscene bug.
+**Open issues — see [`docs/20-KNOWN-ISSUES.md`](20-KNOWN-ISSUES.md)** for remaining items (minor blue speckles on lighthouse facade on Mali, parked Bathysphere projector overlay).
 
-## `v0.0.6.6-audio-load-fix-experimental` — current release
+## `v0.0.7-mali-perf-experimental-audio-fix` — current release
+
+- **Audio Death & Loading-Screen Hang Root Cause Fixed (`third_party/rexglue-git`):**
+  - Identified why audio died randomly at the 2K intro → Main Menu transition (`XAudioUnregisterRenderDriverClient` → `XAudioRegisterRenderDriverClient`) and why clicking Continue/Load then hung forever on the loading screen:
+    1. When the 2K intro XAudio2 mix thread (`sub_82801400`) exited during `UnregisterClient`, it left a stale signal on the mix-complete event (`0x82b2cd80`). On the first callback of the new Main Menu XAudio2 client (`sub_82801580`), `APU-WORKER` immediately consumed that stale `0x82b2cd80` signal and cleared `*(engine + 300) = 0` before the new mix thread woke up — causing the new mix thread to think it was told to shut down and exit permanently. `APU-WORKER` then blocked forever in `KeWaitForMultipleObjects({0x82b2cd80, 0x82b2cd5c})` while holding BioShock's global XAudio2 critical section (`0x82AB33A4`), which also deadlocked the level loader.
+    2. `APU::UnregisterClient` now synchronizes with in-flight `APU-WORKER` callbacks (`in_callback_` + `cb_done_cv_`), `APU::RegisterClient` paces initial callback startup (80 ms delay + 1 initial credit), `RtlInitializeCriticalSection` resets any existing host `EventObject` in `ObjectTable`, `KeSetEvent(0x82b2cd90)` clears any stale reply signal on `0x82b2cd80` before waking the mix thread, and `KeWaitForMultipleObjects` includes automatic lost-wakeup recovery.
+    3. `sdl3_audio_driver.cpp` now detaches `AAudioStream_requestStop`/`close` onto a background thread via ref-counted `AAudioStreamCtx` so wedged Samsung HAL streams can never block the audio watchdog.
+- **Mali Performance Jump (15–21 FPS → 40–44 FPS in Rapture on Mali-G78):**
+  - **Lossless Deferred 3D Refraction Resolves (`gles3_backend.cpp`):** BioShock issues up to 18 full-screen `GL_RGBA16F` resolves per frame to `0x13458000` across 3D refractive meshes and Depth-of-Field passes, each forcing a full Mali TBDR tile-buffer flush. Intermediate 3D depth-tested mesh resolves (`depthTest == 1 && indexCount > 6`) are now coalesced into a deferred `pendingResolve_` that flushes automatically right before any 2D post-process / Depth-of-Field quad (`depthTest == 0` or `indexCount <= 6`) or target switch — keeping 3D transparency in a single uninterrupted tile pass with zero blur or visual regression.
+  - **Hardware `glCopyImageSubData` Depth Resolves (`gles3_backend.cpp`, `gles3_resources.cpp`):** Depth resolves now copy `GL_DEPTH24_STENCIL8` directly via hardware `glCopyImageSubData` with `GL_DEPTH_STENCIL_TEXTURE_MODE = GL_DEPTH_COMPONENT` and `NearestClampSampler()` (100% direct resolves).
+  - **Power-of-Two Bucketed 6-Frame Retired TBO Pool & Static Mesh Eviction Guard (`gles3_resources.cpp`):** Keyed Mali vertex TBOs by `(phys, size)` with `vbSlice[16]` bounds clamping in `DrawConstants`, protected active meshes (`lastFrame + 2 >= frame_`) from mid-frame eviction, and pooled 6-frame-retired GPU-idle TBOs in 5 power-of-two capacity buckets (`1 KB..256 KB`) — cutting `tboNews_` to `0` after warmup with zero vertex flashing.
+  - **Native 16-bit `GL_UNSIGNED_SHORT` Static Index Buffers (`gles3_resources.cpp`, `gles3_backend.cpp`):** Lowered static EBO threshold from 64 to 12 indices and kept 16-bit guest index buffers in native `GL_UNSIGNED_SHORT` (with `0xFFFF` primitive restart), halving index memory and bandwidth.
+  - **32-Slot Texture Fetch Cache & In-Place `drawFbo_` Clears (`gles3_backend.cpp`):** Cached per-slot texture/sampler lookups across unchanged guest `writeSeq`/`resolveGen_` and eliminated full state invalidation on post-resolve clears.
+- **Mali Skybox, Static Geometry > 8 KB & CPU BC4/BC5 Decoders Fixed (`gles3_backend.cpp`, `gles3_resources.cpp`):**
+  - Fixed the `if (vbRange == 0) return false;` bug on the Mali `VertexTextureBuffers()` path that dropped all static meshes > 8 KB (restoring the outdoor skybox, moon, clouds, and static geometry).
+  - Added CPU BC4 (`k_DXT5A`, `GL_R8`) and BC5 (`k_DXN`, `GL_RG8`) block decoders for GPUs without `GL_EXT_texture_compression_rgtc`.
+- **Async Background Shared-EGLContext Shader Compiler (`gles3_shaders.cpp`):**
+  - Brand-new shader cache misses now compile, link, and save `.glesbin` on a background thread with a shared `EGLContext` + 16×16 pbuffer while the render thread skips the draw for 1–2 frames until `PollCompleted()` drains the linked program — eliminating multi-hundred-millisecond stutters when entering new areas.
+
+---
+
+## `v0.0.6.6-audio-load-fix-experimental` — previous release
 
 **Root cause of intermittent load stalls found (audio-related).** The guest's level-load progress
 is coupled to the AAudio callback chain:

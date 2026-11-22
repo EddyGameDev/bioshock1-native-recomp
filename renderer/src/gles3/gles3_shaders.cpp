@@ -241,7 +241,8 @@ uint64_t Gles3Shaders::HashWords(const uint32_t* words, uint32_t count, bool pix
   return h;
 }
 
-void Gles3Shaders::Initialize(const std::filesystem::path& cacheDir) {
+void Gles3Shaders::Initialize(const std::filesystem::path& cacheDir, EGLDisplay display,
+                              EGLConfig config, EGLContext sharedContext) {
   Shutdown();
   cacheDir_ = cacheDir;
   if (!cacheDir_.empty()) {
@@ -262,11 +263,50 @@ void Gles3Shaders::Initialize(const std::filesystem::path& cacheDir) {
   resolveCopyProg_ = LinkBuiltin(kResolveVsSource, kResolveCopyFsSource, "resolveCopy");
   PrewarmCache();
 
-  GLESLOG("Gles3Shaders initialized (binaryFormats=%d, prewarmed=%zu, rectGS=%u, lanczos=%u, resolve=%u)",
-          numFormats, prewarmed_.size(), rectGs_, presentLanczosProg_, resolveCopyProg_);
+  // Start background shared-EGLContext shader compiler thread so brand-new
+  // shaders compile, link, and save .glesbin off the render thread (zero stutter).
+  asyncReady_ = false;
+  compileStop_ = false;
+  if (display != EGL_NO_DISPLAY && config != nullptr && sharedContext != EGL_NO_CONTEXT) {
+    // Flush main context before sharing so any newly created objects are visible.
+    glFlush();
+    compileThread_ = std::thread(&Gles3Shaders::CompileWorkerMain, this, display, config,
+                                 sharedContext);
+    // Wait briefly for the worker to initialize its shared EGLContext.
+    std::unique_lock lock(compileMutex_);
+    compileCv_.wait(lock, [this] { return asyncReady_ || compileStop_; });
+  }
+
+  GLESLOG("Gles3Shaders initialized (binaryFormats=%d, prewarmed=%zu, asyncCompile=%d, "
+          "rectGS=%u, lanczos=%u, resolve=%u)",
+          numFormats, prewarmed_.size(), asyncReady_ ? 1 : 0, rectGs_, presentLanczosProg_,
+          resolveCopyProg_);
 }
 
 void Gles3Shaders::Shutdown() {
+  if (compileThread_.joinable()) {
+    {
+      std::lock_guard lock(compileMutex_);
+      compileStop_ = true;
+    }
+    compileCv_.notify_all();
+    compileThread_.join();
+  }
+  asyncReady_ = false;
+  compileStop_ = false;
+  {
+    std::lock_guard lock(compileMutex_);
+    pendingJobs_.clear();
+  }
+  {
+    std::lock_guard lock(completedMutex_);
+    for (const auto& c : completedJobs_) {
+      if (c.prog) glDeleteProgram(c.prog);
+    }
+    completedJobs_.clear();
+    completedCount_.store(0, std::memory_order_relaxed);
+  }
+  inFlight_.clear();
   for (auto& [k, prog] : prewarmed_) {
     if (prog) glDeleteProgram(prog);
   }
@@ -288,6 +328,159 @@ void Gles3Shaders::Shutdown() {
   if (resolveCopyProg_) { glDeleteProgram(resolveCopyProg_); resolveCopyProg_ = 0; }
   current_[0] = current_[1] = 0;
   binaryCacheHits_ = 0;
+}
+
+void Gles3Shaders::CompileWorkerMain(EGLDisplay display, EGLConfig config,
+                                     EGLContext sharedContext) {
+  const EGLint ctxAttribs[] = {
+      EGL_CONTEXT_MAJOR_VERSION, 3,
+      EGL_CONTEXT_MINOR_VERSION, 2,
+      EGL_NONE,
+  };
+  EGLContext bgCtx = eglCreateContext(display, config, sharedContext, ctxAttribs);
+  const EGLint pbufAttribs[] = {EGL_WIDTH, 16, EGL_HEIGHT, 16, EGL_NONE};
+  EGLSurface bgPbuf =
+      (bgCtx != EGL_NO_CONTEXT) ? eglCreatePbufferSurface(display, config, pbufAttribs)
+                                : EGL_NO_SURFACE;
+  const bool madeCurrent =
+      (bgCtx != EGL_NO_CONTEXT && bgPbuf != EGL_NO_SURFACE &&
+       eglMakeCurrent(display, bgPbuf, bgPbuf, bgCtx) == EGL_TRUE);
+
+  if (!madeCurrent) {
+    GLESERR("Async shader compiler: shared EGLContext init failed (0x%x); falling back to sync",
+            eglGetError());
+    if (bgPbuf != EGL_NO_SURFACE) eglDestroySurface(display, bgPbuf);
+    if (bgCtx != EGL_NO_CONTEXT) eglDestroyContext(display, bgCtx);
+    eglReleaseThread();
+    {
+      std::lock_guard lock(compileMutex_);
+      compileStop_ = true;
+    }
+    compileCv_.notify_all();
+    return;
+  }
+
+  GLuint bgNullFs = CompileShader(GL_FRAGMENT_SHADER, kNullFsSource, "bgNullFS");
+  GLuint bgRectGs = CompileShader(GL_GEOMETRY_SHADER, kRectangleGsSource, "bgRectGS");
+
+  {
+    std::lock_guard lock(compileMutex_);
+    asyncReady_ = true;
+  }
+  compileCv_.notify_all();
+
+  struct BgStageKey {
+    uint64_t hash = 0;
+    uint8_t flags = 0;  // bit0=pixel, bit1=alphaTest
+    bool operator==(const BgStageKey& o) const { return hash == o.hash && flags == o.flags; }
+  };
+  struct BgStageKeyHash {
+    size_t operator()(const BgStageKey& k) const {
+      return static_cast<size_t>(k.hash ^ (static_cast<uint64_t>(k.flags) * 0x9E3779B97F4A7C15ULL));
+    }
+  };
+  std::unordered_map<BgStageKey, GLuint, BgStageKeyHash> bgStages;
+
+  auto getOrCompile = [&](uint64_t hash, bool pixel, bool alphaTest,
+                          const std::string& glsl) -> GLuint {
+    BgStageKey sk{hash, static_cast<uint8_t>((pixel ? 1u : 0u) | (alphaTest ? 2u : 0u))};
+    if (auto it = bgStages.find(sk); it != bgStages.end()) return it->second;
+    std::string src = glsl;
+    if (pixel && alphaTest) {
+      const size_t nl = src.find('\n');
+      if (nl != std::string::npos) {
+        src.insert(nl + 1, "#define BS1_ALPHA_TEST 1\n");
+      }
+    }
+    char label[64];
+    std::snprintf(label, sizeof(label), "%s_%016llx%s", pixel ? "PS" : "VS",
+                  static_cast<unsigned long long>(hash), alphaTest ? "_AT" : "");
+    GLuint sh = CompileShader(pixel ? GL_FRAGMENT_SHADER : GL_VERTEX_SHADER, src, label);
+    bgStages[sk] = sh;
+    return sh;
+  };
+
+  for (;;) {
+    CompileJob job;
+    {
+      std::unique_lock lock(compileMutex_);
+      compileCv_.wait(lock, [this] { return compileStop_ || !pendingJobs_.empty(); });
+      if (compileStop_) break;
+      job = std::move(pendingJobs_.front());
+      pendingJobs_.pop_front();
+    }
+
+    GLuint vsObj = getOrCompile(job.vsHash, false, false, job.vsGlsl);
+    GLuint fsObj = bgNullFs;
+    bool okToLink = (vsObj != 0);
+    if (okToLink && job.psHash != 0) {
+      fsObj = getOrCompile(job.psHash, true, job.alphaTest, job.psGlsl);
+      if (!fsObj && job.alphaTest) {
+        fsObj = getOrCompile(job.psHash, true, false, job.psGlsl);
+      }
+      if (!fsObj) okToLink = false;
+    }
+
+    GLuint prog = 0;
+    if (okToLink) {
+      prog = glCreateProgram();
+      if (hasBinaryFormats_) {
+        glProgramParameteri(prog, GL_PROGRAM_BINARY_RETRIEVABLE_HINT, GL_TRUE);
+      }
+      glAttachShader(prog, vsObj);
+      if (job.rect && bgRectGs) {
+        glAttachShader(prog, bgRectGs);
+      }
+      glAttachShader(prog, fsObj);
+      glLinkProgram(prog);
+      GLint ok = 0;
+      glGetProgramiv(prog, GL_LINK_STATUS, &ok);
+      if (!ok) {
+        char log[2048] = {};
+        glGetProgramInfoLog(prog, sizeof(log) - 1, nullptr, log);
+        GLESERR("Async LinkProgram(vs=%016llx ps=%016llx rect=%d at=%d) failed: %s",
+                static_cast<unsigned long long>(job.vsHash),
+                static_cast<unsigned long long>(job.psHash), job.rect ? 1 : 0,
+                job.alphaTest ? 1 : 0, log);
+        glDeleteProgram(prog);
+        prog = 0;
+      } else {
+        SaveProgramBinary(prog, job.vsHash, job.psHash, job.rect, job.alphaTest);
+        // Ensure the linked program object is visible to the main shared context.
+        glFlush();
+      }
+    }
+
+    {
+      std::lock_guard lock(completedMutex_);
+      completedJobs_.push_back(CompletedProgram{job.key, prog});
+      completedCount_.fetch_add(1u, std::memory_order_release);
+    }
+  }
+
+  for (auto& [k, sh] : bgStages) {
+    if (sh) glDeleteShader(sh);
+  }
+  if (bgNullFs) glDeleteShader(bgNullFs);
+  if (bgRectGs) glDeleteShader(bgRectGs);
+  eglMakeCurrent(display, EGL_NO_SURFACE, EGL_NO_SURFACE, EGL_NO_CONTEXT);
+  eglDestroySurface(display, bgPbuf);
+  eglDestroyContext(display, bgCtx);
+  eglReleaseThread();
+}
+
+void Gles3Shaders::PollCompleted() {
+  if (completedCount_.load(std::memory_order_acquire) == 0u) return;
+  std::vector<CompletedProgram> done;
+  {
+    std::lock_guard lock(completedMutex_);
+    done.swap(completedJobs_);
+    completedCount_.store(0u, std::memory_order_relaxed);
+  }
+  for (const auto& c : done) {
+    inFlight_.erase(c.key);
+    programs_[c.key] = c.prog;
+  }
 }
 
 GLuint Gles3Shaders::CompileShader(GLenum type, const std::string& source, const char* label) {
@@ -497,6 +690,9 @@ void Gles3Shaders::SaveProgramBinary(GLuint prog, uint64_t vsHash, uint64_t psHa
 
 GLuint Gles3Shaders::GetLinkedProgram(Handle vsHandle, Handle psHandle, bool rectangles,
                                       bool alphaTest) {
+  if (completedCount_.load(std::memory_order_acquire) != 0u) {
+    PollCompleted();
+  }
   if (vsHandle == 0 || vsHandle >= stages_.size()) return 0;
   Stage& vs = stages_[vsHandle];
   if (vs.failed) return 0;
@@ -520,6 +716,27 @@ GLuint Gles3Shaders::GetLinkedProgram(Handle vsHandle, Handle psHandle, bool rec
   if (GLuint cached = TryLoadProgramBinary(vs.hash, psHash, rectangles, useAlpha)) {
     programs_[key] = cached;
     return cached;
+  }
+
+  // Non-blocking async compile path: queue brand-new shaders to the background
+  // shared-EGLContext thread so the render thread never stalls on glCompileShader/glLinkProgram.
+  if (asyncReady_) {
+    if (inFlight_.insert(key).second) {
+      CompileJob job;
+      job.key = key;
+      job.vsHash = vs.hash;
+      job.psHash = psHash;
+      job.rect = rectangles;
+      job.alphaTest = useAlpha;
+      job.vsGlsl = vs.glslSource;
+      if (ps) job.psGlsl = ps->glslSource;
+      {
+        std::lock_guard lock(compileMutex_);
+        pendingJobs_.push_back(std::move(job));
+      }
+      compileCv_.notify_one();
+    }
+    return 0;
   }
 
   if (!EnsureStageCompiled(vs)) {

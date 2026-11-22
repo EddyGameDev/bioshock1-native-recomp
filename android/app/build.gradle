@@ -12,8 +12,8 @@ android {
         applicationId "com.bioshock1.recomp"
         minSdk 28
         targetSdk 34
-        versionCode 10
-        versionName "0.0.6.6-audio-load-fix-experimental"
+        versionCode 12
+        versionName "0.0.7-mali-perf-experimental-audio-fix"
 
         ndk {
             abiFilters 'arm64-v8a'
