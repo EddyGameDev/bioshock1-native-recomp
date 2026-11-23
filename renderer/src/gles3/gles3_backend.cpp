@@ -518,6 +518,10 @@ bool Gles3Backend::BeginFrame(uint64_t frame) {
     for (uint32_t i = 0; i < 4; ++i) lastFboColor_[i] = 0;
     lastFboDepth_ = 0;
     drawFboBound_ = false;
+    stateDirty_ = true;
+    std::memset(boundTex_, 0, sizeof(boundTex_));
+    std::memset(boundTexTarget_, 0, sizeof(boundTexTarget_));
+    std::memset(boundSampler_, 0, sizeof(boundSampler_));
     return true;
   }
   return false;
@@ -834,7 +838,7 @@ bool Gles3Backend::ExecuteDraw(const uint32_t* regs, uint32_t initiator, uint32_
   const uint32_t depthInfo = regs[kRegDepthInfo];
   const uint32_t depthControl = regs[kRegDepthControl];
   const bool isRectClear = (primitive == 8u && indexCount <= 6u);
-  const uint32_t cls = ((surfaceInfo >> 16) & 3u) != 0 ? 1u : 0u;
+  const uint32_t msaa = (surfaceInfo >> 16) & 3u;
 
   GLuint colorTex[4] = {};
   const Gles3Resources::ColorTarget* boundColors[4] = {};
@@ -844,7 +848,7 @@ bool Gles3Backend::ExecuteDraw(const uint32_t* regs, uint32_t initiator, uint32_
     if (((ps->colourTargets >> i) & 1u) == 0) continue;
     if (((colorMask >> (i * 4)) & 0xFu) == 0) continue;
     const Gles3Resources::ColorTarget* ct =
-        isRectClear ? resources_.PrimaryColorTargetAt(colorInfos[i], pitch, cls, bottom) : nullptr;
+        isRectClear ? resources_.PrimaryColorTargetAt(colorInfos[i], pitch, msaa) : nullptr;
     if (!ct) ct = resources_.ColorTargetFor(colorInfos[i], surfaceInfo);
     if (!ct || !ct->tex) continue;
     bool dup = false;
@@ -862,7 +866,7 @@ bool Gles3Backend::ExecuteDraw(const uint32_t* regs, uint32_t initiator, uint32_
   const Gles3Resources::DepthTarget* boundDepth = nullptr;
   if ((depthControl & 3u) != 0) {
     const Gles3Resources::DepthTarget* dt =
-        isRectClear ? resources_.PrimaryDepthTargetAt(depthInfo, pitch, cls, bottom) : nullptr;
+        isRectClear ? resources_.PrimaryDepthTargetAt(depthInfo, pitch, msaa) : nullptr;
     if (!dt) dt = resources_.DepthTargetFor(depthInfo, surfaceInfo);
     if (dt && dt->tex) {
       if (!primaryColor || (dt->width == primaryColor->width && dt->height == primaryColor->height)) {
@@ -1926,7 +1930,11 @@ bool Gles3Backend::ExecuteResolve(const uint32_t* regs) {
   const bool colorClear = ((control >> 8) & 1u) != 0;
   const bool depthClear = ((control >> 9) & 1u) != 0;
 
-  resources_.EnsureRows(surfaceInfo, y1);
+  if (resources_.EnsureRows(surfaceInfo, y1)) {
+    for (uint32_t i = 0; i < 4; ++i) lastFboColor_[i] = 0;
+    lastFboDepth_ = 0;
+    drawFboBound_ = false;
+  }
   uint32_t targetW = 0, targetH = 0;
   float scaleX = 1.0f, scaleY = 1.0f;
   resources_.TargetSize(surfaceInfo, 4, targetW, targetH, scaleX, scaleY);

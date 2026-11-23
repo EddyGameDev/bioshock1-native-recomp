@@ -145,11 +145,9 @@ class Gles3Resources final : public rex::IPhysicalWriteListener {
                   uint32_t& heightOut, float& scaleXOut, float& scaleYOut) const;
 
   const ColorTarget* ColorTargetFor(uint32_t colorInfo, uint32_t surfaceInfo);
-  const ColorTarget* PrimaryColorTargetAt(uint32_t colorInfo, uint32_t pitch, uint32_t cls,
-                                          int32_t clearBottom) const;
+  const ColorTarget* PrimaryColorTargetAt(uint32_t colorInfo, uint32_t pitch, uint32_t msaa) const;
   const DepthTarget* DepthTargetFor(uint32_t depthInfo, uint32_t surfaceInfo);
-  const DepthTarget* PrimaryDepthTargetAt(uint32_t depthInfo, uint32_t pitch, uint32_t cls,
-                                          int32_t clearBottom) const;
+  const DepthTarget* PrimaryDepthTargetAt(uint32_t depthInfo, uint32_t pitch, uint32_t msaa) const;
 
   Resolved* ResolvedFor(uint32_t base, uint32_t width, uint32_t height, GLenum internalFormat,
                         bool isDepth);
@@ -215,6 +213,7 @@ class Gles3Resources final : public rex::IPhysicalWriteListener {
 
   void DestroyScaledTargets();
   void ClearColorTextureZero(GLuint tex);
+  void ClearDepthTextureOne(GLuint tex);
   void UploadTextureData(GuestTexture& tex, const uint32_t words[6], bool wantSrgb);
   void UploadVertexTbo(VertexBuffer& vb, const uint8_t* ptr, uint32_t exactSize);
   void RecycleVertexBufferGl(VertexBuffer& vb, bool allowPool);

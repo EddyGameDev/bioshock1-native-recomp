@@ -865,6 +865,31 @@ void Gles3Resources::ClearColorTextureZero(GLuint tex) {
   if (prevScissor) glEnable(GL_SCISSOR_TEST);
 }
 
+void Gles3Resources::ClearDepthTextureOne(GLuint tex) {
+  if (!tex || !clearFbo_) return;
+  GLint prevFbo = 0;
+  glGetIntegerv(GL_DRAW_FRAMEBUFFER_BINDING, &prevFbo);
+  GLboolean prevScissor = glIsEnabled(GL_SCISSOR_TEST);
+  GLboolean prevDepthMask = GL_TRUE;
+  glGetBooleanv(GL_DEPTH_WRITEMASK, &prevDepthMask);
+  GLint prevStencilMask = 0xFF;
+  glGetIntegerv(GL_STENCIL_WRITEMASK, &prevStencilMask);
+  if (prevScissor) glDisable(GL_SCISSOR_TEST);
+  glDepthMask(GL_TRUE);
+  glStencilMask(0xFFu);
+  glBindFramebuffer(GL_DRAW_FRAMEBUFFER, clearFbo_);
+  glFramebufferTexture2D(GL_DRAW_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, 0, 0);
+  glFramebufferTexture2D(GL_DRAW_FRAMEBUFFER, GL_DEPTH_STENCIL_ATTACHMENT, GL_TEXTURE_2D, tex, 0);
+  const GLenum db = GL_NONE;
+  glDrawBuffers(1, &db);
+  glClearBufferfi(GL_DEPTH_STENCIL, 0, 1.0f, 0);
+  glFramebufferTexture2D(GL_DRAW_FRAMEBUFFER, GL_DEPTH_STENCIL_ATTACHMENT, GL_TEXTURE_2D, 0, 0);
+  glBindFramebuffer(GL_DRAW_FRAMEBUFFER, static_cast<GLuint>(prevFbo));
+  glDepthMask(prevDepthMask);
+  glStencilMask(static_cast<GLuint>(prevStencilMask));
+  if (prevScissor) glEnable(GL_SCISSOR_TEST);
+}
+
 void Gles3Resources::Shutdown() {
   DestroyScaledTargets();
   for (auto& [k, t] : textures_) {
@@ -1128,17 +1153,32 @@ bool Gles3Resources::BeginFrame(uint64_t frame) {
     }
     if (evicted > 0) ClearIbL1();
   }
-  if ((frame_ & 127u) == 0u && textures_.size() > 256u) {
-    uint32_t evicted = 0;
-    for (auto it = textures_.begin(); it != textures_.end() && evicted < 4u;) {
-      if (frame_ > it->second.lastFrame + 900u) {
+  if ((frame_ & 127u) == 0u) {
+    if (textures_.size() > 256u) {
+      uint32_t evicted = 0;
+      for (auto it = textures_.begin(); it != textures_.end() && evicted < 4u;) {
+        if (frame_ > it->second.lastFrame + 900u) {
+          if (it->second.tex) glDeleteTextures(1, &it->second.tex);
+          it = textures_.erase(it);
+          ++evicted;
+        } else {
+          ++it;
+        }
+      }
+    }
+    // Evict dead menu/loading-screen resolved targets not written for 300+ frames so stale
+    // resolves can never shadow newly loaded level textures if guest physical memory is reused.
+    bool evictedDepth = false;
+    for (auto it = resolved_.begin(); it != resolved_.end();) {
+      if (frame_ > it->second.lastFrame + 300u && &it->second != lastFrontbuffer_) {
+        if (it->second.isDepth) evictedDepth = true;
         if (it->second.tex) glDeleteTextures(1, &it->second.tex);
-        it = textures_.erase(it);
-        ++evicted;
+        it = resolved_.erase(it);
       } else {
         ++it;
       }
     }
+    if (evictedDepth) RebuildResolvedDepthList();
   }
   if (std::fabs(requestedScale_ - scale_) > 0.01f) {
     scale_ = requestedScale_;
@@ -1256,6 +1296,7 @@ const Gles3Resources::ColorTarget* Gles3Resources::ColorTargetFor(uint32_t color
   ct.format = canonFmt;
   ct.lastFrame = frame_;
 
+  glActiveTexture(GL_TEXTURE31);
   glGenTextures(1, &ct.tex);
   glBindTexture(GL_TEXTURE_2D, ct.tex);
   glTexStorage2D(GL_TEXTURE_2D, 1, glFmt, static_cast<GLsizei>(w), static_cast<GLsizei>(h));
@@ -1271,29 +1312,25 @@ const Gles3Resources::ColorTarget* Gles3Resources::ColorTargetFor(uint32_t color
 }
 
 const Gles3Resources::ColorTarget* Gles3Resources::PrimaryColorTargetAt(uint32_t colorInfo,
-                                                                        uint32_t minPitch,
-                                                                        uint32_t cls,
-                                                                        int32_t clearBottom) const {
-  if (clearBottom <= 0) return nullptr;
+                                                                        uint32_t pitch,
+                                                                        uint32_t msaa) const {
+  // Only Xenos D3D9 MSAA fast-clear aliases (msaa == 2 -> half-pitch 4x alias, msaa == 1 -> 2x
+  // alias) redirect to an existing non-MSAA target at the same EDRAM base. Direct msaa == 0 clears
+  // always target their exact (edramBase, pitch, msaa=0) surface.
+  if (msaa == 0u || pitch == 0u) return nullptr;
+  const uint32_t expectedPitch = (msaa == 2u) ? (pitch * 2u) : pitch;
   const uint32_t base = colorInfo & 0xFFFu;
   const uint32_t rawFmt = (colorInfo >> 16) & 0xFu;
   const uint32_t canonFmt =
       (rawFmt == 12u) ? 3u : (rawFmt == 10u) ? 2u : (rawFmt == 1u) ? 0u : rawFmt;
   const ColorTarget* best = nullptr;
-  uint32_t bestPitch = minPitch;
   int bestScore = -1;
   for (const auto& [k, ct] : colorTargets_) {
     if (ct.edramBase != base || !ct.tex) continue;
-    if (ct.pitch <= minPitch) continue;
-    // Only redirect a narrow-pitch DI_PT_RECTLIST clear to a wider EDRAM surface when the clear
-    // height actually exceeds the wider target's rows (linear tile-wrap alias clear, e.g. 640x1440
-    // clearing 1280x720). Never steal normal smaller-target clears sharing the same EDRAM base!
-    if (static_cast<uint32_t>(clearBottom) <= ct.rows) continue;
-    const uint32_t ctCls = ct.msaa != 0 ? 1u : 0u;
-    const int score = ((ctCls == cls) ? 4 : 0) + ((ct.format == canonFmt) ? 2 : 0);
-    if (score > bestScore || (score == bestScore && ct.pitch > bestPitch)) {
+    if (ct.msaa != 0u || ct.pitch != expectedPitch) continue;
+    const int score = (ct.format == canonFmt) ? 2 : 0;
+    if (score > bestScore) {
       bestScore = score;
-      bestPitch = ct.pitch;
       best = &ct;
     }
   }
@@ -1334,6 +1371,7 @@ const Gles3Resources::DepthTarget* Gles3Resources::DepthTargetFor(uint32_t depth
   dt.msaa = msaa;
   dt.lastFrame = frame_;
 
+  glActiveTexture(GL_TEXTURE31);
   glGenTextures(1, &dt.tex);
   glBindTexture(GL_TEXTURE_2D, dt.tex);
   glTexStorage2D(GL_TEXTURE_2D, 1, GL_DEPTH24_STENCIL8, static_cast<GLsizei>(w),
@@ -1344,35 +1382,27 @@ const Gles3Resources::DepthTarget* Gles3Resources::DepthTargetFor(uint32_t depth
   glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
   glTexParameteri(GL_TEXTURE_2D, GL_DEPTH_STENCIL_TEXTURE_MODE, GL_DEPTH_COMPONENT);
   glBindTexture(GL_TEXTURE_2D, 0);
+  ClearDepthTextureOne(dt.tex);
 
   auto [ins, _] = depthTargets_.emplace(key, dt);
   return &ins->second;
 }
 
 const Gles3Resources::DepthTarget* Gles3Resources::PrimaryDepthTargetAt(uint32_t depthInfo,
-                                                                        uint32_t minPitch,
-                                                                        uint32_t cls,
-                                                                        int32_t clearBottom) const {
-  if (clearBottom <= 0) return nullptr;
+                                                                        uint32_t pitch,
+                                                                        uint32_t msaa) const {
+  // Only Xenos D3D9 MSAA fast-clear aliases (msaa == 2 -> half-pitch 4x alias, e.g. p=640->1280,
+  // p=280->560, p=80->160; msaa == 1 -> 2x alias) redirect to an existing non-MSAA target at the
+  // same EDRAM base. Direct msaa == 0 clears must NEVER be stolen by a wider target sharing the
+  // same EDRAM base (fixes missing dynamic shadow clears at ed=0x5a0/0x5b0).
+  if (msaa == 0u || pitch == 0u) return nullptr;
+  const uint32_t expectedPitch = (msaa == 2u) ? (pitch * 2u) : pitch;
   const uint32_t base = depthInfo & 0xFFFu;
-  const DepthTarget* best = nullptr;
-  uint32_t bestPitch = minPitch;
-  int bestScore = -1;
   for (const auto& [k, dt] : depthTargets_) {
     if (dt.edramBase != base || !dt.tex) continue;
-    if (dt.pitch <= minPitch) continue;
-    // Never steal 512x512 dynamic shadow-map rect clears (ed=0x5a0, clearBottom <= 512) onto
-    // a 1280x720 depth target sharing ed=0x5a0; only redirect genuine narrow-pitch alias clears.
-    if (static_cast<uint32_t>(clearBottom) <= dt.rows) continue;
-    const uint32_t dtCls = dt.msaa != 0 ? 1u : 0u;
-    const int score = (dtCls == cls) ? 2 : 0;
-    if (score > bestScore || (score == bestScore && dt.pitch > bestPitch)) {
-      bestScore = score;
-      bestPitch = dt.pitch;
-      best = &dt;
-    }
+    if (dt.msaa == 0u && dt.pitch == expectedPitch) return &dt;
   }
-  return best;
+  return nullptr;
 }
 
 Gles3Resources::Resolved* Gles3Resources::ResolvedFor(uint32_t base, uint32_t width,
@@ -1387,6 +1417,7 @@ Gles3Resources::Resolved* Gles3Resources::ResolvedFor(uint32_t base, uint32_t wi
     if (r.width >= width && r.height >= height && r.internalFormat == internalFormat &&
         r.isDepth == isDepth && r.tex != 0) {
       r.lastFrame = frame_;
+      if (watch_) ArmWatch(addr, 4096u);
       return &r;
     }
     if (r.internalFormat == internalFormat && r.isDepth == isDepth) {
@@ -1405,6 +1436,7 @@ Gles3Resources::Resolved* Gles3Resources::ResolvedFor(uint32_t base, uint32_t wi
   r.isDepth = isDepth;
   r.lastFrame = frame_;
 
+  glActiveTexture(GL_TEXTURE31);
   glGenTextures(1, &r.tex);
   glBindTexture(GL_TEXTURE_2D, r.tex);
   glTexStorage2D(GL_TEXTURE_2D, 1, internalFormat, static_cast<GLsizei>(allocW),
@@ -1418,9 +1450,12 @@ Gles3Resources::Resolved* Gles3Resources::ResolvedFor(uint32_t base, uint32_t wi
     glTexParameteri(GL_TEXTURE_2D, GL_DEPTH_STENCIL_TEXTURE_MODE, GL_DEPTH_COMPONENT);
   }
   glBindTexture(GL_TEXTURE_2D, 0);
-  if (!isDepth) {
+  if (internalFormat == GL_DEPTH24_STENCIL8) {
+    ClearDepthTextureOne(r.tex);
+  } else if (!isDepth) {
     ClearColorTextureZero(r.tex);
   }
+  if (watch_) ArmWatch(addr, 4096u);
 
   auto [ins, _] = resolved_.insert_or_assign(addr, r);
   RebuildResolvedDepthList();
@@ -1608,7 +1643,12 @@ GLuint Gles3Resources::TextureFor(const uint32_t words[6], uint32_t& widthOut, u
 
   if (!isCubeOut) {
     if (const Resolved* r = ResolvedAt(baseAddr)) {
-      if (watch_ && RangeDirtiedSince(baseAddr, baseAddr + 4096u, r->lastWriteSeq)) {
+      const bool isCompressedFmt =
+          (fmtId == 18u || fmtId == 19u || fmtId == 20u || fmtId == 49u || fmtId == 51u ||
+           fmtId == 52u || fmtId == 53u || fmtId == 59u);
+      const bool dirtied =
+          watch_ && RangeDirtiedSince(baseAddr, baseAddr + 4096u, r->lastWriteSeq);
+      if (isCompressedFmt || dirtied) {
         const uint32_t rAddr = baseAddr & 0x1FFFF000u;
         if (lastFrontbuffer_ == r) lastFrontbuffer_ = nullptr;
         if (r->tex) glDeleteTextures(1, &resolved_[rAddr].tex);
@@ -2240,6 +2280,7 @@ void Gles3Resources::UpdateGammaLut(const uint32_t table[256], uint64_t version)
     rgba[i * 4 + 2] = static_cast<float>(v & 0x3FFu) / 1023.0f;
     rgba[i * 4 + 3] = 1.0f;
   }
+  glActiveTexture(GL_TEXTURE31);
   glBindTexture(GL_TEXTURE_2D, gammaTex_);
   glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, 256, 1, GL_RGBA, GL_FLOAT, rgba);
   glBindTexture(GL_TEXTURE_2D, 0);

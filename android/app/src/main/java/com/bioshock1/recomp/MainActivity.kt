@@ -14,7 +14,11 @@ import android.os.Handler
 import android.os.Looper
 import android.provider.OpenableColumns
 import android.view.Gravity
+import android.view.InputDevice
+import android.view.KeyEvent
+import android.view.MotionEvent
 import android.view.View
+import android.view.ViewGroup
 import android.view.WindowInsets
 import android.view.WindowInsetsController
 import android.view.WindowManager
@@ -32,6 +36,9 @@ import java.io.File
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
+import kotlin.math.abs
+import kotlin.math.max
+import kotlin.math.sign
 
 class MainActivity : Activity() {
     private lateinit var launcherPanel: View
@@ -64,6 +71,20 @@ class MainActivity : Activity() {
     private val hudHandler = Handler(Looper.getMainLooper())
     private var lastPresentCount = 0L
     private var lastFpsTimeNs = 0L
+
+    // Separate touch and hardware-gamepad states merged before sending to nativeSetControls().
+    private val touchAxes = FloatArray(8)
+    private val touchButtons = ByteArray(32)
+    private val padAxes = FloatArray(8)
+    private val padButtons = ByteArray(32)
+    private val mergedAxes = FloatArray(8)
+    private val mergedButtons = ByteArray(32)
+    private var padDpadKeyMask = 0
+    private var padDpadHatMask = 0
+    private var padLtKey = false
+    private var padRtKey = false
+    private var padLtAxis = false
+    private var padRtAxis = false
     private val fpsRunnable = object : Runnable {
         override fun run() {
             val now = System.nanoTime()
@@ -368,6 +389,150 @@ class MainActivity : Activity() {
         setTextColor(Color.argb(230, 235, 245, 255))
         setBackgroundColor(Color.argb(130, 14, 22, 34))
         setPadding(16, 8, 16, 8)
+        isFocusable = false
+        isFocusableInTouchMode = false
+    }
+
+    private fun pushMergedControls() {
+        for (i in 0 until 8) {
+            mergedAxes[i] = if (abs(padAxes[i]) >= abs(touchAxes[i])) padAxes[i] else touchAxes[i]
+        }
+        for (i in 0 until 32) {
+            mergedButtons[i] = if (touchButtons[i].toInt() != 0 || padButtons[i].toInt() != 0) 1 else 0
+        }
+        NativeBridge.nativeSetControls(mergedAxes, mergedButtons)
+    }
+
+    private fun syncPadCompoundButtons() {
+        val dpad = padDpadKeyMask or padDpadHatMask
+        padButtons[12] = if ((dpad and 1) != 0) 1 else 0
+        padButtons[13] = if ((dpad and 2) != 0) 1 else 0
+        padButtons[14] = if ((dpad and 4) != 0) 1 else 0
+        padButtons[15] = if ((dpad and 8) != 0) 1 else 0
+        padButtons[6] = if (padLtKey || padLtAxis) 1 else 0
+        padButtons[7] = if (padRtKey || padRtAxis) 1 else 0
+    }
+
+    private fun isGamepadSource(source: Int): Boolean {
+        val mask = InputDevice.SOURCE_GAMEPAD or InputDevice.SOURCE_JOYSTICK
+        return (source and mask) != 0
+    }
+
+    private fun applyStickDeadzone(raw: Float, device: InputDevice?, axis: Int, source: Int): Float {
+        val flat = device?.getMotionRange(axis, source)?.flat ?: 0f
+        val dz = max(flat, 0.10f).coerceAtMost(0.30f)
+        val mag = abs(raw)
+        if (mag <= dz) return 0f
+        return (sign(raw) * ((mag - dz) / (1f - dz))).coerceIn(-1f, 1f)
+    }
+
+    override fun dispatchKeyEvent(event: KeyEvent): Boolean {
+        if (surface != null) {
+            val fromPad = isGamepadSource(event.source) ||
+                ((event.source and InputDevice.SOURCE_DPAD) == InputDevice.SOURCE_DPAD)
+            val keyCode = event.keyCode
+            val isPadButtonKey = KeyEvent.isGamepadButton(keyCode)
+            if (fromPad || isPadButtonKey) {
+                val down = event.action == KeyEvent.ACTION_DOWN
+                val up = event.action == KeyEvent.ACTION_UP
+                if (!down && !up) return true
+                if (down && event.repeatCount > 0) return true
+                var handled = true
+                when (keyCode) {
+                    KeyEvent.KEYCODE_BUTTON_A -> padButtons[0] = if (down) 1 else 0
+                    KeyEvent.KEYCODE_BUTTON_B -> padButtons[1] = if (down) 1 else 0
+                    KeyEvent.KEYCODE_BUTTON_X -> padButtons[2] = if (down) 1 else 0
+                    KeyEvent.KEYCODE_BUTTON_Y -> padButtons[3] = if (down) 1 else 0
+                    KeyEvent.KEYCODE_BUTTON_L1 -> padButtons[4] = if (down) 1 else 0
+                    KeyEvent.KEYCODE_BUTTON_R1 -> padButtons[5] = if (down) 1 else 0
+                    KeyEvent.KEYCODE_BUTTON_L2 -> padLtKey = down
+                    KeyEvent.KEYCODE_BUTTON_R2 -> padRtKey = down
+                    KeyEvent.KEYCODE_BUTTON_SELECT, KeyEvent.KEYCODE_BACK -> {
+                        if (keyCode == KeyEvent.KEYCODE_BACK && !fromPad) {
+                            handled = false
+                        } else {
+                            padButtons[8] = if (down) 1 else 0
+                        }
+                    }
+                    KeyEvent.KEYCODE_BUTTON_START, KeyEvent.KEYCODE_MENU -> {
+                        if (keyCode == KeyEvent.KEYCODE_MENU && !fromPad) {
+                            handled = false
+                        } else {
+                            padButtons[9] = if (down) 1 else 0
+                        }
+                    }
+                    KeyEvent.KEYCODE_BUTTON_THUMBL -> padButtons[10] = if (down) 1 else 0
+                    KeyEvent.KEYCODE_BUTTON_THUMBR -> padButtons[11] = if (down) 1 else 0
+                    KeyEvent.KEYCODE_DPAD_UP -> {
+                        padDpadKeyMask = if (down) (padDpadKeyMask or 1) else (padDpadKeyMask and 1.inv())
+                    }
+                    KeyEvent.KEYCODE_DPAD_DOWN -> {
+                        padDpadKeyMask = if (down) (padDpadKeyMask or 2) else (padDpadKeyMask and 2.inv())
+                    }
+                    KeyEvent.KEYCODE_DPAD_LEFT -> {
+                        padDpadKeyMask = if (down) (padDpadKeyMask or 4) else (padDpadKeyMask and 4.inv())
+                    }
+                    KeyEvent.KEYCODE_DPAD_RIGHT -> {
+                        padDpadKeyMask = if (down) (padDpadKeyMask or 8) else (padDpadKeyMask and 8.inv())
+                    }
+                    KeyEvent.KEYCODE_BUTTON_MODE -> {
+                        // Consume Xbox Guide button in-game so it doesn't move focus to HUD pills.
+                    }
+                    else -> handled = false
+                }
+                if (handled) {
+                    syncPadCompoundButtons()
+                    pushMergedControls()
+                    return true
+                }
+            }
+        }
+        return super.dispatchKeyEvent(event)
+    }
+
+    override fun dispatchGenericMotionEvent(event: MotionEvent): Boolean {
+        if (surface != null && isGamepadSource(event.source) && event.action == MotionEvent.ACTION_MOVE) {
+            val dev = event.device
+            val src = event.source
+            // Left stick (negate Y so +1 = up, matching XInput & TouchControlsView).
+            padAxes[0] = applyStickDeadzone(event.getAxisValue(MotionEvent.AXIS_X), dev, MotionEvent.AXIS_X, src)
+            padAxes[1] = -applyStickDeadzone(event.getAxisValue(MotionEvent.AXIS_Y), dev, MotionEvent.AXIS_Y, src)
+
+            // Right stick: Xbox Bluetooth/USB uses AXIS_Z / AXIS_RZ on Android; fallback to RX / RY.
+            val hasZ = dev?.getMotionRange(MotionEvent.AXIS_Z, src) != null &&
+                dev.getMotionRange(MotionEvent.AXIS_RZ, src) != null
+            val rxAxis = if (hasZ) MotionEvent.AXIS_Z else MotionEvent.AXIS_RX
+            val ryAxis = if (hasZ) MotionEvent.AXIS_RZ else MotionEvent.AXIS_RY
+            padAxes[2] = applyStickDeadzone(event.getAxisValue(rxAxis), dev, rxAxis, src)
+            padAxes[3] = -applyStickDeadzone(event.getAxisValue(ryAxis), dev, ryAxis, src)
+
+            // Triggers: Xbox Bluetooth exposes AXIS_LTRIGGER/RTRIGGER or AXIS_BRAKE/GAS.
+            val lt = max(
+                event.getAxisValue(MotionEvent.AXIS_LTRIGGER),
+                event.getAxisValue(MotionEvent.AXIS_BRAKE),
+            )
+            val rt = max(
+                event.getAxisValue(MotionEvent.AXIS_RTRIGGER),
+                event.getAxisValue(MotionEvent.AXIS_GAS),
+            )
+            padLtAxis = lt > 0.15f
+            padRtAxis = rt > 0.15f
+
+            // D-Pad hat axes (standard on Xbox Bluetooth controllers on Android).
+            val hatX = event.getAxisValue(MotionEvent.AXIS_HAT_X)
+            val hatY = event.getAxisValue(MotionEvent.AXIS_HAT_Y)
+            var hatMask = 0
+            if (hatY < -0.5f) hatMask = hatMask or 1
+            if (hatY > 0.5f) hatMask = hatMask or 2
+            if (hatX < -0.5f) hatMask = hatMask or 4
+            if (hatX > 0.5f) hatMask = hatMask or 8
+            padDpadHatMask = hatMask
+
+            syncPadCompoundButtons()
+            pushMergedControls()
+            return true
+        }
+        return super.dispatchGenericMotionEvent(event)
     }
 
     private var audioFocusRequest: AudioFocusRequest? = null
@@ -409,8 +574,12 @@ class MainActivity : Activity() {
         container.addView(surface)
 
         val controls = TouchControlsView(this).apply {
+            isFocusable = false
+            isFocusableInTouchMode = false
             listener = TouchControlsView.Listener { axes, buttons ->
-                NativeBridge.nativeSetControls(axes, buttons)
+                axes.copyInto(touchAxes, 0, 0, minOf(axes.size, touchAxes.size))
+                buttons.copyInto(touchButtons, 0, 0, minOf(buttons.size, touchButtons.size))
+                pushMergedControls()
             }
             layoutParams = FrameLayout.LayoutParams(
                 FrameLayout.LayoutParams.MATCH_PARENT,
@@ -424,6 +593,8 @@ class MainActivity : Activity() {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
             setPadding(16, 12, 16, 12)
+            isFocusable = false
+            descendantFocusability = ViewGroup.FOCUS_BLOCK_DESCENDANTS
             layoutParams = FrameLayout.LayoutParams(
                 FrameLayout.LayoutParams.WRAP_CONTENT,
                 FrameLayout.LayoutParams.WRAP_CONTENT,
