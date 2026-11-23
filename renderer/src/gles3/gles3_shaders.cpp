@@ -1,6 +1,8 @@
 #include "gles3_shaders.h"
 
 #include <android/log.h>
+#include <pthread.h>
+#include <sys/resource.h>
 
 #include <atomic>
 #include <cstring>
@@ -22,68 +24,51 @@ precision highp float;
 void main() {}
 )GLSL";
 
-const char* const kRectangleGsSource = R"GLSL(#version 320 es
-precision highp float;
-layout(triangles) in;
-layout(triangle_strip, max_vertices = 4) out;
-
-layout(location = 0)  in vec4 gi0[3];  layout(location = 1)  in vec4 gi1[3];
-layout(location = 2)  in vec4 gi2[3];  layout(location = 3)  in vec4 gi3[3];
-layout(location = 4)  in vec4 gi4[3];  layout(location = 5)  in vec4 gi5[3];
-layout(location = 6)  in vec4 gi6[3];  layout(location = 7)  in vec4 gi7[3];
-layout(location = 8)  in vec4 gi8[3];  layout(location = 9)  in vec4 gi9[3];
-layout(location = 10) in vec4 gi10[3]; layout(location = 11) in vec4 gi11[3];
-layout(location = 12) in vec4 gi12[3]; layout(location = 13) in vec4 gi13[3];
-layout(location = 14) in vec4 gi14[3]; layout(location = 15) in vec4 gi15[3];
-
-layout(location = 0)  out vec4 v_o0;  layout(location = 1)  out vec4 v_o1;
-layout(location = 2)  out vec4 v_o2;  layout(location = 3)  out vec4 v_o3;
-layout(location = 4)  out vec4 v_o4;  layout(location = 5)  out vec4 v_o5;
-layout(location = 6)  out vec4 v_o6;  layout(location = 7)  out vec4 v_o7;
-layout(location = 8)  out vec4 v_o8;  layout(location = 9)  out vec4 v_o9;
-layout(location = 10) out vec4 v_o10; layout(location = 11) out vec4 v_o11;
-layout(location = 12) out vec4 v_o12; layout(location = 13) out vec4 v_o13;
-layout(location = 14) out vec4 v_o14; layout(location = 15) out vec4 v_o15;
-
-void emitIdx(int i) {
-  gl_Position = gl_in[i].gl_Position;
-  v_o0 = gi0[i];   v_o1 = gi1[i];   v_o2 = gi2[i];   v_o3 = gi3[i];
-  v_o4 = gi4[i];   v_o5 = gi5[i];   v_o6 = gi6[i];   v_o7 = gi7[i];
-  v_o8 = gi8[i];   v_o9 = gi9[i];   v_o10 = gi10[i]; v_o11 = gi11[i];
-  v_o12 = gi12[i]; v_o13 = gi13[i]; v_o14 = gi14[i]; v_o15 = gi15[i];
-  EmitVertex();
+std::string MakeRectangleGsSource(uint32_t numInterps) {
+  if (numInterps > 16u) numInterps = 16u;
+  std::ostringstream ss;
+  ss << "#version 320 es\n"
+     << "precision highp float;\n"
+     << "layout(triangles) in;\n"
+     << "layout(triangle_strip, max_vertices = 4) out;\n";
+  for (uint32_t i = 0; i < numInterps; ++i) {
+    ss << "layout(location = " << i << ") in vec4 gi" << i << "[3];\n";
+  }
+  for (uint32_t i = 0; i < numInterps; ++i) {
+    ss << "layout(location = " << i << ") out vec4 v_o" << i << ";\n";
+  }
+  ss << "void emitIdx(int i) {\n"
+     << "  gl_Position = gl_in[i].gl_Position;\n";
+  for (uint32_t i = 0; i < numInterps; ++i) {
+    ss << "  v_o" << i << " = gi" << i << "[i];\n";
+  }
+  ss << "  EmitVertex();\n"
+     << "}\n"
+     << "void emitFourth(int a, int c, int b) {\n"
+     << "  gl_Position = gl_in[a].gl_Position + gl_in[b].gl_Position - gl_in[c].gl_Position;\n";
+  for (uint32_t i = 0; i < numInterps; ++i) {
+    ss << "  v_o" << i << " = gi" << i << "[a] + gi" << i << "[b] - gi" << i << "[c];\n";
+  }
+  ss << "  EmitVertex();\n"
+     << "}\n"
+     << "void main() {\n"
+     << "  vec2 p0 = gl_in[0].gl_Position.xy / gl_in[0].gl_Position.w;\n"
+     << "  vec2 p1 = gl_in[1].gl_Position.xy / gl_in[1].gl_Position.w;\n"
+     << "  vec2 p2 = gl_in[2].gl_Position.xy / gl_in[2].gl_Position.w;\n"
+     << "  float d01 = dot(p1 - p0, p1 - p0);\n"
+     << "  float d12 = dot(p2 - p1, p2 - p1);\n"
+     << "  float d02 = dot(p2 - p0, p2 - p0);\n"
+     << "  int c = (d02 >= d01 && d02 >= d12) ? 1 : (d01 >= d12 ? 2 : 0);\n"
+     << "  int a = (c + 1) % 3;\n"
+     << "  int b = (c + 2) % 3;\n"
+     << "  emitIdx(c);\n"
+     << "  emitIdx(a);\n"
+     << "  emitIdx(b);\n"
+     << "  emitFourth(a, c, b);\n"
+     << "  EndPrimitive();\n"
+     << "}\n";
+  return ss.str();
 }
-
-void emitFourth(int a, int c, int b) {
-  gl_Position = gl_in[a].gl_Position + gl_in[b].gl_Position - gl_in[c].gl_Position;
-  v_o0 = gi0[a] + gi0[b] - gi0[c];     v_o1 = gi1[a] + gi1[b] - gi1[c];
-  v_o2 = gi2[a] + gi2[b] - gi2[c];     v_o3 = gi3[a] + gi3[b] - gi3[c];
-  v_o4 = gi4[a] + gi4[b] - gi4[c];     v_o5 = gi5[a] + gi5[b] - gi5[c];
-  v_o6 = gi6[a] + gi6[b] - gi6[c];     v_o7 = gi7[a] + gi7[b] - gi7[c];
-  v_o8 = gi8[a] + gi8[b] - gi8[c];     v_o9 = gi9[a] + gi9[b] - gi9[c];
-  v_o10 = gi10[a] + gi10[b] - gi10[c]; v_o11 = gi11[a] + gi11[b] - gi11[c];
-  v_o12 = gi12[a] + gi12[b] - gi12[c]; v_o13 = gi13[a] + gi13[b] - gi13[c];
-  v_o14 = gi14[a] + gi14[b] - gi14[c]; v_o15 = gi15[a] + gi15[b] - gi15[c];
-  EmitVertex();
-}
-
-void main() {
-  vec2 p0 = gl_in[0].gl_Position.xy / gl_in[0].gl_Position.w;
-  vec2 p1 = gl_in[1].gl_Position.xy / gl_in[1].gl_Position.w;
-  vec2 p2 = gl_in[2].gl_Position.xy / gl_in[2].gl_Position.w;
-  float d01 = dot(p1 - p0, p1 - p0);
-  float d12 = dot(p2 - p1, p2 - p1);
-  float d02 = dot(p2 - p0, p2 - p0);
-  int c = (d02 >= d01 && d02 >= d12) ? 1 : (d01 >= d12 ? 2 : 0);
-  int a = (c + 1) % 3;
-  int b = (c + 2) % 3;
-  emitIdx(c);
-  emitIdx(a);
-  emitIdx(b);
-  emitFourth(a, c, b);
-  EndPrimitive();
-}
-)GLSL";
 
 // Present VS: flips V so row 0 of our GL_LOWER_LEFT offscreen FBO maps to TOP of FBO 0 (screen).
 const char* const kPresentVsSource = R"GLSL(#version 320 es
@@ -240,7 +225,7 @@ uint64_t Gles3Shaders::HashWords(const uint32_t* words, uint32_t count, bool pix
 }
 
 void Gles3Shaders::Initialize(const std::filesystem::path& cacheDir, EGLDisplay display,
-                              EGLConfig config, EGLContext sharedContext) {
+                              EGLConfig config, EGLContext sharedContext, bool noErrorContext) {
   Shutdown();
   cacheDir_ = cacheDir;
   if (!cacheDir_.empty()) {
@@ -255,43 +240,51 @@ void Gles3Shaders::Initialize(const std::filesystem::path& cacheDir, EGLDisplay 
   stages_.emplace_back();  // 0 = invalid sentinel
 
   nullFs_ = CompileShader(GL_FRAGMENT_SHADER, kNullFsSource, "nullFS");
-  rectGs_ = CompileShader(GL_GEOMETRY_SHADER, kRectangleGsSource, "rectGS");
+  for (uint32_t i = 0; i <= 16; ++i) {
+    rectGs_[i] = CompileShader(GL_GEOMETRY_SHADER, MakeRectangleGsSource(i), "rectGS");
+  }
   presentLanczosProg_ = LinkBuiltin(kPresentVsSource, kPresentLanczosFsSource, "presentLanczos");
   presentBilinearProg_ = LinkBuiltin(kPresentVsSource, kPresentBilinearFsSource, "presentBilinear");
   resolveCopyProg_ = LinkBuiltin(kResolveVsSource, kResolveCopyFsSource, "resolveCopy");
   PrewarmCache();
 
-  // Start background shared-EGLContext shader compiler thread so brand-new
-  // shaders compile, link, and save .glesbin off the render thread (zero stutter).
+  // Start background shared-EGLContext shader compiler pool (3 worker threads) so brand-new
+  // shaders compile, link, and save .glesbin in parallel off the render thread.
   asyncReady_ = false;
   compileStop_ = false;
+  workersFinishedInit_ = 0;
   if (display != EGL_NO_DISPLAY && config != nullptr && sharedContext != EGL_NO_CONTEXT) {
     // Flush main context before sharing so any newly created objects are visible.
     glFlush();
-    compileThread_ = std::thread(&Gles3Shaders::CompileWorkerMain, this, display, config,
-                                 sharedContext);
-    // Wait briefly for the worker to initialize its shared EGLContext.
+    for (uint32_t i = 0; i < kNumCompileWorkers; ++i) {
+      compileThreads_[i] = std::thread(&Gles3Shaders::CompileWorkerMain, this, display, config,
+                                       sharedContext, noErrorContext);
+    }
+    // Wait briefly for all workers to initialize their shared EGLContexts.
     std::unique_lock lock(compileMutex_);
-    compileCv_.wait(lock, [this] { return asyncReady_ || compileStop_; });
+    compileCv_.wait(lock, [this] { return workersFinishedInit_ >= kNumCompileWorkers; });
   }
 
   GLESLOG("Gles3Shaders initialized (binaryFormats=%d, prewarmed=%zu, asyncCompile=%d, "
           "rectGS=%u, lanczos=%u, resolve=%u)",
-          numFormats, prewarmed_.size(), asyncReady_ ? 1 : 0, rectGs_, presentLanczosProg_,
+          numFormats, prewarmed_.size(), asyncReady_ ? 1 : 0, rectGs_[0], presentLanczosProg_,
           resolveCopyProg_);
 }
 
 void Gles3Shaders::Shutdown() {
-  if (compileThread_.joinable()) {
-    {
-      std::lock_guard lock(compileMutex_);
-      compileStop_ = true;
+  {
+    std::lock_guard lock(compileMutex_);
+    compileStop_ = true;
+  }
+  compileCv_.notify_all();
+  for (uint32_t i = 0; i < kNumCompileWorkers; ++i) {
+    if (compileThreads_[i].joinable()) {
+      compileThreads_[i].join();
     }
-    compileCv_.notify_all();
-    compileThread_.join();
   }
   asyncReady_ = false;
   compileStop_ = false;
+  workersFinishedInit_ = 0;
   {
     std::lock_guard lock(compileMutex_);
     pendingJobs_.clear();
@@ -315,12 +308,16 @@ void Gles3Shaders::Shutdown() {
   programs_.clear();
   for (Stage& s : stages_) {
     if (s.shader) glDeleteShader(s.shader);
-    if (s.shaderAlphaTest) glDeleteShader(s.shaderAlphaTest);
+    for (uint32_t v = 1; v < 8; ++v) {
+      if (s.shaderVariants[v]) glDeleteShader(s.shaderVariants[v]);
+    }
   }
   stages_.clear();
   byHash_.clear();
   if (nullFs_) { glDeleteShader(nullFs_); nullFs_ = 0; }
-  if (rectGs_) { glDeleteShader(rectGs_); rectGs_ = 0; }
+  for (uint32_t i = 0; i <= 16; ++i) {
+    if (rectGs_[i]) { glDeleteShader(rectGs_[i]); rectGs_[i] = 0; }
+  }
   if (presentLanczosProg_) { glDeleteProgram(presentLanczosProg_); presentLanczosProg_ = 0; }
   if (presentBilinearProg_) { glDeleteProgram(presentBilinearProg_); presentBilinearProg_ = 0; }
   if (resolveCopyProg_) { glDeleteProgram(resolveCopyProg_); resolveCopyProg_ = 0; }
@@ -329,13 +326,23 @@ void Gles3Shaders::Shutdown() {
 }
 
 void Gles3Shaders::CompileWorkerMain(EGLDisplay display, EGLConfig config,
-                                     EGLContext sharedContext) {
-  const EGLint ctxAttribs[] = {
+                                     EGLContext sharedContext, bool noErrorContext) {
+  pthread_setname_np(pthread_self(), "BS1-ShaderBg");
+  setpriority(PRIO_PROCESS, 0, 10);
+  constexpr EGLint kEglContextOpenGlNoErrorKhr = 0x31B3;
+  const EGLint ctxAttribsNoErr[] = {
+      EGL_CONTEXT_MAJOR_VERSION, 3,
+      EGL_CONTEXT_MINOR_VERSION, 2,
+      kEglContextOpenGlNoErrorKhr, EGL_TRUE,
+      EGL_NONE,
+  };
+  const EGLint ctxAttribsStd[] = {
       EGL_CONTEXT_MAJOR_VERSION, 3,
       EGL_CONTEXT_MINOR_VERSION, 2,
       EGL_NONE,
   };
-  EGLContext bgCtx = eglCreateContext(display, config, sharedContext, ctxAttribs);
+  EGLContext bgCtx = eglCreateContext(display, config, sharedContext,
+                                      noErrorContext ? ctxAttribsNoErr : ctxAttribsStd);
   const EGLint pbufAttribs[] = {EGL_WIDTH, 16, EGL_HEIGHT, 16, EGL_NONE};
   EGLSurface bgPbuf =
       (bgCtx != EGL_NO_CONTEXT) ? eglCreatePbufferSurface(display, config, pbufAttribs)
@@ -345,31 +352,34 @@ void Gles3Shaders::CompileWorkerMain(EGLDisplay display, EGLConfig config,
        eglMakeCurrent(display, bgPbuf, bgPbuf, bgCtx) == EGL_TRUE);
 
   if (!madeCurrent) {
-    GLESERR("Async shader compiler: shared EGLContext init failed (0x%x); falling back to sync",
-            eglGetError());
+    GLESERR("Async shader compiler: shared EGLContext init failed (0x%x)", eglGetError());
     if (bgPbuf != EGL_NO_SURFACE) eglDestroySurface(display, bgPbuf);
     if (bgCtx != EGL_NO_CONTEXT) eglDestroyContext(display, bgCtx);
     eglReleaseThread();
     {
       std::lock_guard lock(compileMutex_);
-      compileStop_ = true;
+      ++workersFinishedInit_;
     }
     compileCv_.notify_all();
     return;
   }
 
   GLuint bgNullFs = CompileShader(GL_FRAGMENT_SHADER, kNullFsSource, "bgNullFS");
-  GLuint bgRectGs = CompileShader(GL_GEOMETRY_SHADER, kRectangleGsSource, "bgRectGS");
+  GLuint bgRectGs[17] = {};
+  for (uint32_t i = 0; i <= 16; ++i) {
+    bgRectGs[i] = CompileShader(GL_GEOMETRY_SHADER, MakeRectangleGsSource(i), "bgRectGS");
+  }
 
   {
     std::lock_guard lock(compileMutex_);
     asyncReady_ = true;
+    ++workersFinishedInit_;
   }
   compileCv_.notify_all();
 
   struct BgStageKey {
     uint64_t hash = 0;
-    uint8_t flags = 0;  // bit0=pixel, bit1=alphaTest
+    uint8_t flags = 0;  // bit0=pixel, bit1=alphaTest, bit2=pixelGen
     bool operator==(const BgStageKey& o) const { return hash == o.hash && flags == o.flags; }
   };
   struct BgStageKeyHash {
@@ -379,20 +389,26 @@ void Gles3Shaders::CompileWorkerMain(EGLDisplay display, EGLConfig config,
   };
   std::unordered_map<BgStageKey, GLuint, BgStageKeyHash> bgStages;
 
-  auto getOrCompile = [&](uint64_t hash, bool pixel, bool alphaTest,
-                          const std::string& glsl) -> GLuint {
-    BgStageKey sk{hash, static_cast<uint8_t>((pixel ? 1u : 0u) | (alphaTest ? 2u : 0u))};
+  auto getOrCompile = [&](uint64_t hash, bool pixel, bool alphaTest, bool pixelGen,
+                          bool forceHighp, const std::string& glsl) -> GLuint {
+    BgStageKey sk{hash, static_cast<uint8_t>((pixel ? 1u : 0u) | (alphaTest ? 2u : 0u) |
+                                             (pixelGen ? 4u : 0u) | (forceHighp ? 8u : 0u))};
     if (auto it = bgStages.find(sk); it != bgStages.end()) return it->second;
     std::string src = glsl;
-    if (pixel && alphaTest) {
+    if (pixel && (alphaTest || pixelGen || forceHighp)) {
       const size_t nl = src.find('\n');
       if (nl != std::string::npos) {
-        src.insert(nl + 1, "#define BS1_ALPHA_TEST 1\n");
+        std::string defs;
+        if (alphaTest) defs += "#define BS1_ALPHA_TEST 1\n";
+        if (pixelGen) defs += "#define BS1_PIXEL_GEN 1\n";
+        if (forceHighp) defs += "#define BS1_HIGHP 1\n";
+        src.insert(nl + 1, defs);
       }
     }
     char label[64];
-    std::snprintf(label, sizeof(label), "%s_%016llx%s", pixel ? "PS" : "VS",
-                  static_cast<unsigned long long>(hash), alphaTest ? "_AT" : "");
+    std::snprintf(label, sizeof(label), "%s_%016llx%s%s%s", pixel ? "PS" : "VS",
+                  static_cast<unsigned long long>(hash), alphaTest ? "_AT" : "",
+                  pixelGen ? "_PG" : "", forceHighp ? "_HP" : "");
     GLuint sh = CompileShader(pixel ? GL_FRAGMENT_SHADER : GL_VERTEX_SHADER, src, label);
     bgStages[sk] = sh;
     return sh;
@@ -408,13 +424,13 @@ void Gles3Shaders::CompileWorkerMain(EGLDisplay display, EGLConfig config,
       pendingJobs_.pop_front();
     }
 
-    GLuint vsObj = getOrCompile(job.vsHash, false, false, job.vsGlsl);
+    GLuint vsObj = getOrCompile(job.vsHash, false, false, false, false, job.vsGlsl);
     GLuint fsObj = bgNullFs;
     bool okToLink = (vsObj != 0);
     if (okToLink && job.psHash != 0) {
-      fsObj = getOrCompile(job.psHash, true, job.alphaTest, job.psGlsl);
-      if (!fsObj && job.alphaTest) {
-        fsObj = getOrCompile(job.psHash, true, false, job.psGlsl);
+      fsObj = getOrCompile(job.psHash, true, job.alphaTest, job.pixelGen, job.forceHighp, job.psGlsl);
+      if (!fsObj && (job.alphaTest || job.pixelGen || job.forceHighp)) {
+        fsObj = getOrCompile(job.psHash, true, false, false, false, job.psGlsl);
       }
       if (!fsObj) okToLink = false;
     }
@@ -426,8 +442,9 @@ void Gles3Shaders::CompileWorkerMain(EGLDisplay display, EGLConfig config,
         glProgramParameteri(prog, GL_PROGRAM_BINARY_RETRIEVABLE_HINT, GL_TRUE);
       }
       glAttachShader(prog, vsObj);
-      if (job.rect && bgRectGs) {
-        glAttachShader(prog, bgRectGs);
+      if (job.rect) {
+        const uint32_t gsIdx = std::min(16u, job.psInterps);
+        if (bgRectGs[gsIdx]) glAttachShader(prog, bgRectGs[gsIdx]);
       }
       glAttachShader(prog, fsObj);
       glLinkProgram(prog);
@@ -436,14 +453,15 @@ void Gles3Shaders::CompileWorkerMain(EGLDisplay display, EGLConfig config,
       if (!ok) {
         char log[2048] = {};
         glGetProgramInfoLog(prog, sizeof(log) - 1, nullptr, log);
-        GLESERR("Async LinkProgram(vs=%016llx ps=%016llx rect=%d at=%d) failed: %s",
+        GLESERR("Async LinkProgram(vs=%016llx ps=%016llx rect=%d at=%d pg=%d hp=%d) failed: %s",
                 static_cast<unsigned long long>(job.vsHash),
                 static_cast<unsigned long long>(job.psHash), job.rect ? 1 : 0,
-                job.alphaTest ? 1 : 0, log);
+                job.alphaTest ? 1 : 0, job.pixelGen ? 1 : 0, job.forceHighp ? 1 : 0, log);
         glDeleteProgram(prog);
         prog = 0;
       } else {
-        SaveProgramBinary(prog, job.vsHash, job.psHash, job.rect, job.alphaTest);
+        SaveProgramBinary(prog, job.vsHash, job.psHash, job.rect, job.alphaTest, job.pixelGen,
+                          job.forceHighp);
         // Ensure the linked program object is visible to the main shared context.
         glFlush();
       }
@@ -460,7 +478,9 @@ void Gles3Shaders::CompileWorkerMain(EGLDisplay display, EGLConfig config,
     if (sh) glDeleteShader(sh);
   }
   if (bgNullFs) glDeleteShader(bgNullFs);
-  if (bgRectGs) glDeleteShader(bgRectGs);
+  for (uint32_t i = 0; i <= 16; ++i) {
+    if (bgRectGs[i]) glDeleteShader(bgRectGs[i]);
+  }
   eglMakeCurrent(display, EGL_NO_SURFACE, EGL_NO_SURFACE, EGL_NO_CONTEXT);
   eglDestroySurface(display, bgPbuf);
   eglDestroyContext(display, bgCtx);
@@ -565,6 +585,7 @@ Gles3Shaders::Handle Gles3Shaders::Intern(const uint32_t* words, uint32_t count,
   stage.textureFetches = std::move(tr.textureFetches);
   stage.constantMap = std::move(tr.constantMap);
   stage.colourTargets = tr.colourTargets;
+  stage.interpolators = tr.interpolators;
   stage.writesDepth = tr.writesDepth;
   stage.usesKill = tr.usesKill;
   stage.glslSource = std::move(tr.glsl);
@@ -589,6 +610,29 @@ bool Gles3Shaders::EnsureStageCompiled(Stage& stage) {
 void Gles3Shaders::PrewarmCache() {
   if (!hasBinaryFormats_ || cacheDir_.empty()) return;
   std::error_code ec;
+  const auto verPath = cacheDir_ / "shader_cache.ver";
+  const uint64_t curVer = XenosGlsl::Version();
+  uint64_t savedVer = 0;
+  {
+    std::ifstream vif(verPath);
+    if (vif) vif >> std::hex >> savedVer;
+  }
+  if (savedVer != curVer) {
+    uint32_t removed = 0;
+    for (const auto& entry : std::filesystem::directory_iterator(cacheDir_, ec)) {
+      if (!entry.is_regular_file()) continue;
+      const std::string name = entry.path().filename().string();
+      if (name.size() >= 8 && name.compare(name.size() - 8, 8, ".glesbin") == 0) {
+        std::filesystem::remove(entry.path(), ec);
+        ++removed;
+      }
+    }
+    std::ofstream vof(verPath, std::ios::trunc);
+    if (vof) vof << std::hex << curVer << "\n";
+    GLESLOG("Purged %u stale .glesbin shader cache files for version %016llx", removed,
+            static_cast<unsigned long long>(curVer));
+    return;
+  }
   for (const auto& entry : std::filesystem::directory_iterator(cacheDir_, ec)) {
     if (!entry.is_regular_file()) continue;
     const std::string name = entry.path().filename().string();
@@ -602,10 +646,12 @@ void Gles3Shaders::PrewarmCache() {
     const uint64_t vsHash = static_cast<uint64_t>(vsH);
     const uint64_t psHash = static_cast<uint64_t>(psH);
     const bool rect = (rFlag != 0);
-    const bool alpha = (aFlag != 0);
-    HashProgramKey hk{vsHash, psHash, rect, alpha};
+    const bool alpha = (aFlag & 1u) != 0;
+    const bool pixelGen = (aFlag & 2u) != 0;
+    const bool forceHighp = (aFlag & 4u) != 0;
+    HashProgramKey hk{vsHash, psHash, rect, alpha, pixelGen, forceHighp};
     if (prewarmed_.find(hk) != prewarmed_.end()) continue;
-    if (GLuint prog = TryLoadProgramBinary(vsHash, psHash, rect, alpha)) {
+    if (GLuint prog = TryLoadProgramBinary(vsHash, psHash, rect, alpha, pixelGen, forceHighp)) {
       prewarmed_[hk] = prog;
     }
   }
@@ -617,19 +663,21 @@ const Gles3Shaders::Stage* Gles3Shaders::GetStage(Handle h) const {
 }
 
 std::filesystem::path Gles3Shaders::BinaryCachePath(uint64_t vsHash, uint64_t psHash, bool rect,
-                                                    bool alphaTest) const {
+                                                    bool alphaTest, bool pixelGen,
+                                                    bool forceHighp) const {
   if (cacheDir_.empty()) return {};
   char name[96];
+  const uint32_t aFlag = (alphaTest ? 1u : 0u) | (pixelGen ? 2u : 0u) | (forceHighp ? 4u : 0u);
   std::snprintf(name, sizeof(name), "%016llx_%016llx_%u_%u.glesbin",
                 static_cast<unsigned long long>(vsHash), static_cast<unsigned long long>(psHash),
-                rect ? 1u : 0u, alphaTest ? 1u : 0u);
+                rect ? 1u : 0u, aFlag);
   return cacheDir_ / name;
 }
 
 GLuint Gles3Shaders::TryLoadProgramBinary(uint64_t vsHash, uint64_t psHash, bool rect,
-                                          bool alphaTest) {
+                                          bool alphaTest, bool pixelGen, bool forceHighp) {
   if (!hasBinaryFormats_ || cacheDir_.empty()) return 0;
-  const auto path = BinaryCachePath(vsHash, psHash, rect, alphaTest);
+  const auto path = BinaryCachePath(vsHash, psHash, rect, alphaTest, pixelGen, forceHighp);
   std::ifstream ifs(path, std::ios::binary);
   if (!ifs) return 0;
   struct Header {
@@ -656,7 +704,7 @@ GLuint Gles3Shaders::TryLoadProgramBinary(uint64_t vsHash, uint64_t psHash, bool
 }
 
 void Gles3Shaders::SaveProgramBinary(GLuint prog, uint64_t vsHash, uint64_t psHash, bool rect,
-                                     bool alphaTest) {
+                                     bool alphaTest, bool pixelGen, bool forceHighp) {
   if (!hasBinaryFormats_ || cacheDir_.empty() || !prog) return;
   GLint len = 0;
   glGetProgramiv(prog, GL_PROGRAM_BINARY_LENGTH, &len);
@@ -667,7 +715,7 @@ void Gles3Shaders::SaveProgramBinary(GLuint prog, uint64_t vsHash, uint64_t psHa
   glGetProgramBinary(prog, len, &actual, &fmt, blob.data());
   if (actual <= 0) return;
 
-  const auto path = BinaryCachePath(vsHash, psHash, rect, alphaTest);
+  const auto path = BinaryCachePath(vsHash, psHash, rect, alphaTest, pixelGen, forceHighp);
   auto tmp = path;
   tmp += ".tmp";
   std::ofstream ofs(tmp, std::ios::binary | std::ios::trunc);
@@ -687,7 +735,7 @@ void Gles3Shaders::SaveProgramBinary(GLuint prog, uint64_t vsHash, uint64_t psHa
 }
 
 GLuint Gles3Shaders::GetLinkedProgram(Handle vsHandle, Handle psHandle, bool rectangles,
-                                      bool alphaTest) {
+                                      bool alphaTest, bool pixelGen, bool forceHighp) {
   if (completedCount_.load(std::memory_order_acquire) != 0u) {
     PollCompleted();
   }
@@ -697,35 +745,37 @@ GLuint Gles3Shaders::GetLinkedProgram(Handle vsHandle, Handle psHandle, bool rec
   Stage* ps = (psHandle != 0 && psHandle < stages_.size()) ? &stages_[psHandle] : nullptr;
   if (psHandle && (!ps || ps->failed)) return 0;
   const bool useAlpha = (ps != nullptr) && alphaTest;
+  const bool usePixelGen = (ps != nullptr) && pixelGen;
+  const bool useHighp = (ps != nullptr) && forceHighp && !ps->writesDepth;
 
-  ProgramKey key{vsHandle, psHandle, rectangles, useAlpha};
+  ProgramKey key{vsHandle, psHandle, rectangles, useAlpha, usePixelGen, useHighp};
   if (auto it = programs_.find(key); it != programs_.end()) {
     return it->second;
   }
 
   const uint64_t psHash = ps ? ps->hash : 0ULL;
-  HashProgramKey hk{vs.hash, psHash, rectangles, useAlpha};
+  HashProgramKey hk{vs.hash, psHash, rectangles, useAlpha, usePixelGen, useHighp};
   if (auto pit = prewarmed_.find(hk); pit != prewarmed_.end()) {
     const GLuint prog = pit->second;
     prewarmed_.erase(pit);
     programs_[key] = prog;
     return prog;
   }
-  if (GLuint cached = TryLoadProgramBinary(vs.hash, psHash, rectangles, useAlpha)) {
-    programs_[key] = cached;
-    return cached;
-  }
 
-  // Non-blocking async compile path: queue brand-new shaders to the background
-  // shared-EGLContext thread so the render thread never stalls on glCompileShader/glLinkProgram.
+  // Non-blocking async compile path: queue brand-new shaders to the low-priority background
+  // shared-EGLContext threads so the render thread never stalls on disk open() or glCompileShader.
+  // (All existing .glesbin binaries on disk were already preloaded into prewarmed_ at startup.)
   if (asyncReady_) {
     if (inFlight_.insert(key).second) {
       CompileJob job;
       job.key = key;
       job.vsHash = vs.hash;
       job.psHash = psHash;
+      job.psInterps = ps ? ps->interpolators : 0u;
       job.rect = rectangles;
       job.alphaTest = useAlpha;
+      job.pixelGen = usePixelGen;
+      job.forceHighp = useHighp;
       job.vsGlsl = vs.glslSource;
       if (ps) job.psGlsl = ps->glslSource;
       {
@@ -747,19 +797,26 @@ GLuint Gles3Shaders::GetLinkedProgram(Handle vsHandle, Handle psHandle, bool rec
       programs_[key] = 0;
       return 0;
     }
-    if (useAlpha) {
-      if (!ps->shaderAlphaTest && !ps->glslSource.empty()) {
+    const uint32_t vIdx =
+        (useAlpha ? 1u : 0u) | (usePixelGen ? 2u : 0u) | (useHighp ? 4u : 0u);
+    if (vIdx != 0u) {
+      if (!ps->shaderVariants[vIdx] && !ps->glslSource.empty()) {
         std::string src = ps->glslSource;
         const size_t nl = src.find('\n');
         if (nl != std::string::npos) {
-          src.insert(nl + 1, "#define BS1_ALPHA_TEST 1\n");
+          std::string defs;
+          if (useAlpha) defs += "#define BS1_ALPHA_TEST 1\n";
+          if (usePixelGen) defs += "#define BS1_PIXEL_GEN 1\n";
+          if (useHighp) defs += "#define BS1_HIGHP 1\n";
+          src.insert(nl + 1, defs);
         }
         char label[64];
-        std::snprintf(label, sizeof(label), "PS_%016llx_AT",
-                      static_cast<unsigned long long>(ps->hash));
-        ps->shaderAlphaTest = CompileShader(GL_FRAGMENT_SHADER, src, label);
+        std::snprintf(label, sizeof(label), "PS_%016llx%s%s%s",
+                      static_cast<unsigned long long>(ps->hash), useAlpha ? "_AT" : "",
+                      usePixelGen ? "_PG" : "", useHighp ? "_HP" : "");
+        ps->shaderVariants[vIdx] = CompileShader(GL_FRAGMENT_SHADER, src, label);
       }
-      fsObj = ps->shaderAlphaTest ? ps->shaderAlphaTest : ps->shader;
+      fsObj = ps->shaderVariants[vIdx] ? ps->shaderVariants[vIdx] : ps->shader;
     } else {
       fsObj = ps->shader;
     }
@@ -770,8 +827,9 @@ GLuint Gles3Shaders::GetLinkedProgram(Handle vsHandle, Handle psHandle, bool rec
     glProgramParameteri(prog, GL_PROGRAM_BINARY_RETRIEVABLE_HINT, GL_TRUE);
   }
   glAttachShader(prog, vs.shader);
-  if (rectangles && rectGs_) {
-    glAttachShader(prog, rectGs_);
+  if (rectangles) {
+    const uint32_t gsIdx = std::min(16u, ps ? ps->interpolators : 0u);
+    if (rectGs_[gsIdx]) glAttachShader(prog, rectGs_[gsIdx]);
   }
   glAttachShader(prog, fsObj);
   glLinkProgram(prog);
@@ -780,15 +838,15 @@ GLuint Gles3Shaders::GetLinkedProgram(Handle vsHandle, Handle psHandle, bool rec
   if (!ok) {
     char log[2048] = {};
     glGetProgramInfoLog(prog, sizeof(log) - 1, nullptr, log);
-    GLESERR("LinkProgram(vs=%016llx ps=%016llx rect=%d at=%d) failed: %s",
+    GLESERR("LinkProgram(vs=%016llx ps=%016llx rect=%d at=%d pg=%d hp=%d) failed: %s",
             static_cast<unsigned long long>(vs.hash), static_cast<unsigned long long>(psHash),
-            rectangles ? 1 : 0, useAlpha ? 1 : 0, log);
+            rectangles ? 1 : 0, useAlpha ? 1 : 0, usePixelGen ? 1 : 0, useHighp ? 1 : 0, log);
     glDeleteProgram(prog);
     programs_[key] = 0;
     return 0;
   }
 
-  SaveProgramBinary(prog, vs.hash, psHash, rectangles, useAlpha);
+  SaveProgramBinary(prog, vs.hash, psHash, rectangles, useAlpha, usePixelGen, useHighp);
   programs_[key] = prog;
   return prog;
 }

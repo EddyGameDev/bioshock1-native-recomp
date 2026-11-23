@@ -19,6 +19,9 @@ namespace {
 constexpr GLenum kGlCompressedRgbaS3tcDxt1 = 0x83F1;
 constexpr GLenum kGlCompressedRgbaS3tcDxt3 = 0x83F2;
 constexpr GLenum kGlCompressedRgbaS3tcDxt5 = 0x83F3;
+constexpr GLenum kGlCompressedSrgbAlphaS3tcDxt1 = 0x8C4D;
+constexpr GLenum kGlCompressedSrgbAlphaS3tcDxt3 = 0x8C4E;
+constexpr GLenum kGlCompressedSrgbAlphaS3tcDxt5 = 0x8C4F;
 constexpr GLenum kGlCompressedRedRgtc1 = 0x8DBB;
 constexpr GLenum kGlCompressedRgRgtc2 = 0x8DBD;
 constexpr GLenum kGlTextureMaxAnisotropy = 0x84FE;
@@ -109,6 +112,7 @@ struct GlTexFmt {
   GLenum type = GL_UNSIGNED_BYTE;
   uint32_t blockBytes = 4;
   bool compressed = false;
+  bool hwSrgb = false;
   bool expand565 = false;
   bool expand4444 = false;
   bool expand1555 = false;
@@ -117,7 +121,8 @@ struct GlTexFmt {
   bool supported = false;
 };
 
-GlTexFmt DescribeGlFormat(uint32_t fmt, bool hasS3tc, bool hasRgtc, bool hasNorm16) {
+GlTexFmt DescribeGlFormat(uint32_t fmt, bool hasS3tc, bool hasS3tcSrgb, bool hasRgtc, bool hasNorm16,
+                          bool wantSrgb) {
   GlTexFmt d{};
   switch (fmt) {
     case 2:   // k_8
@@ -130,7 +135,8 @@ GlTexFmt DescribeGlFormat(uint32_t fmt, bool hasS3tc, bool hasRgtc, bool hasNorm
       d.supported = true;
       break;
     case 3:  // k_1_5_5_5
-      d.internalFormat = GL_RGBA8;
+      d.internalFormat = wantSrgb ? GL_SRGB8_ALPHA8 : GL_RGBA8;
+      d.hwSrgb = wantSrgb;
       d.format = GL_RGBA;
       d.type = GL_UNSIGNED_BYTE;
       d.blockBytes = 2;
@@ -138,7 +144,8 @@ GlTexFmt DescribeGlFormat(uint32_t fmt, bool hasS3tc, bool hasRgtc, bool hasNorm
       d.supported = true;
       break;
     case 4:  // k_5_6_5
-      d.internalFormat = GL_RGBA8;
+      d.internalFormat = wantSrgb ? GL_SRGB8_ALPHA8 : GL_RGBA8;
+      d.hwSrgb = wantSrgb;
       d.format = GL_RGBA;
       d.type = GL_UNSIGNED_BYTE;
       d.blockBytes = 2;
@@ -149,7 +156,8 @@ GlTexFmt DescribeGlFormat(uint32_t fmt, bool hasS3tc, bool hasRgtc, bool hasNorm
     case 14:  // k_8_8_8_8_A
     case 50:
     case 62:
-      d.internalFormat = GL_RGBA8;
+      d.internalFormat = wantSrgb ? GL_SRGB8_ALPHA8 : GL_RGBA8;
+      d.hwSrgb = wantSrgb;
       d.format = GL_RGBA;
       d.type = GL_UNSIGNED_BYTE;
       d.blockBytes = 4;
@@ -171,7 +179,8 @@ GlTexFmt DescribeGlFormat(uint32_t fmt, bool hasS3tc, bool hasRgtc, bool hasNorm
       d.supported = true;
       break;
     case 15:  // k_4_4_4_4
-      d.internalFormat = GL_RGBA8;
+      d.internalFormat = wantSrgb ? GL_SRGB8_ALPHA8 : GL_RGBA8;
+      d.hwSrgb = wantSrgb;
       d.format = GL_RGBA;
       d.type = GL_UNSIGNED_BYTE;
       d.blockBytes = 2;
@@ -184,9 +193,15 @@ GlTexFmt DescribeGlFormat(uint32_t fmt, bool hasS3tc, bool hasRgtc, bool hasNorm
       d.compressed = true;
       d.supported = true;
       if (hasS3tc) {
-        d.internalFormat = kGlCompressedRgbaS3tcDxt1;
+        if (wantSrgb && hasS3tcSrgb) {
+          d.internalFormat = kGlCompressedSrgbAlphaS3tcDxt1;
+          d.hwSrgb = true;
+        } else {
+          d.internalFormat = kGlCompressedRgbaS3tcDxt1;
+        }
       } else {
-        d.internalFormat = GL_RGBA8;
+        d.internalFormat = wantSrgb ? GL_SRGB8_ALPHA8 : GL_RGBA8;
+        d.hwSrgb = wantSrgb;
         d.dxtMode = 1;
       }
       break;
@@ -196,9 +211,15 @@ GlTexFmt DescribeGlFormat(uint32_t fmt, bool hasS3tc, bool hasRgtc, bool hasNorm
       d.compressed = true;
       d.supported = true;
       if (hasS3tc) {
-        d.internalFormat = kGlCompressedRgbaS3tcDxt3;
+        if (wantSrgb && hasS3tcSrgb) {
+          d.internalFormat = kGlCompressedSrgbAlphaS3tcDxt3;
+          d.hwSrgb = true;
+        } else {
+          d.internalFormat = kGlCompressedRgbaS3tcDxt3;
+        }
       } else {
-        d.internalFormat = GL_RGBA8;
+        d.internalFormat = wantSrgb ? GL_SRGB8_ALPHA8 : GL_RGBA8;
+        d.hwSrgb = wantSrgb;
         d.dxtMode = 2;
       }
       break;
@@ -208,9 +229,15 @@ GlTexFmt DescribeGlFormat(uint32_t fmt, bool hasS3tc, bool hasRgtc, bool hasNorm
       d.compressed = true;
       d.supported = true;
       if (hasS3tc) {
-        d.internalFormat = kGlCompressedRgbaS3tcDxt5;
+        if (wantSrgb && hasS3tcSrgb) {
+          d.internalFormat = kGlCompressedSrgbAlphaS3tcDxt5;
+          d.hwSrgb = true;
+        } else {
+          d.internalFormat = kGlCompressedRgbaS3tcDxt5;
+        }
       } else {
-        d.internalFormat = GL_RGBA8;
+        d.internalFormat = wantSrgb ? GL_SRGB8_ALPHA8 : GL_RGBA8;
+        d.hwSrgb = wantSrgb;
         d.dxtMode = 3;
       }
       break;
@@ -692,6 +719,7 @@ void Gles3Resources::Initialize(rex::IPhysicalMemory* memory, rex::IPhysicalWrit
 
   const char* exts = reinterpret_cast<const char*>(glGetString(GL_EXTENSIONS));
   hasS3tc_ = HasExtension(exts, "GL_EXT_texture_compression_s3tc");
+  hasS3tcSrgb_ = HasExtension(exts, "GL_EXT_texture_compression_s3tc_srgb");
   hasRgtc_ = HasExtension(exts, "GL_EXT_texture_compression_rgtc");
   hasNorm16_ = HasExtension(exts, "GL_EXT_texture_norm16");
   hasBorderClamp_ = HasExtension(exts, "GL_EXT_texture_border_clamp");
@@ -740,6 +768,7 @@ void Gles3Resources::Initialize(rex::IPhysicalMemory* memory, rex::IPhysicalWrit
   glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
   glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
   glBindTexture(GL_TEXTURE_2D, 0);
+  glGenFramebuffers(1, &clearFbo_);
 
   GLint ssboAlign = 64;
   glGetIntegerv(GL_SHADER_STORAGE_BUFFER_OFFSET_ALIGNMENT, &ssboAlign);
@@ -783,12 +812,13 @@ void Gles3Resources::Initialize(rex::IPhysicalMemory* memory, rex::IPhysicalWrit
   vbRingOffset_ = 0;
   vbHalf_ = 0;
 
-  GLESLOG("Gles3Resources initialized (s3tc=%d rgtc=%d norm16=%d maxAniso=%.1f vbRing=%d vbRingTbo=%u sz=%zuMB)",
-          hasS3tc_, hasRgtc_, hasNorm16_, maxDeviceAniso_, vbRingPtr_ ? 1 : 0, vbRingTbo_,
+  GLESLOG("Gles3Resources initialized (s3tc=%d s3tcSrgb=%d rgtc=%d norm16=%d maxAniso=%.1f vbRing=%d vbRingTbo=%u sz=%zuMB)",
+          hasS3tc_, hasS3tcSrgb_, hasRgtc_, hasNorm16_, maxDeviceAniso_, vbRingPtr_ ? 1 : 0, vbRingTbo_,
           vbRingSize_ >> 20);
 }
 
 void Gles3Resources::DestroyScaledTargets() {
+  ClearTargetL1();
   for (auto& [k, ct] : colorTargets_) {
     if (ct.tex) glDeleteTextures(1, &ct.tex);
   }
@@ -801,7 +831,38 @@ void Gles3Resources::DestroyScaledTargets() {
     if (r.tex) glDeleteTextures(1, &r.tex);
   }
   resolved_.clear();
+  resolvedDepthCount_ = 0;
   lastFrontbuffer_ = nullptr;
+}
+
+void Gles3Resources::RebuildResolvedDepthList() {
+  resolvedDepthCount_ = 0;
+  for (const auto& [addr, r] : resolved_) {
+    if (r.isDepth && r.tex && resolvedDepthCount_ < 16u) {
+      resolvedDepthAddrs_[resolvedDepthCount_++] = addr;
+    }
+  }
+}
+
+void Gles3Resources::ClearColorTextureZero(GLuint tex) {
+  if (!tex || !clearFbo_) return;
+  GLint prevFbo = 0;
+  glGetIntegerv(GL_DRAW_FRAMEBUFFER_BINDING, &prevFbo);
+  GLboolean prevScissor = glIsEnabled(GL_SCISSOR_TEST);
+  GLboolean prevMask[4] = {GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE};
+  glGetBooleanv(GL_COLOR_WRITEMASK, prevMask);
+  if (prevScissor) glDisable(GL_SCISSOR_TEST);
+  glColorMaski(0, GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
+  glBindFramebuffer(GL_DRAW_FRAMEBUFFER, clearFbo_);
+  glFramebufferTexture2D(GL_DRAW_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, tex, 0);
+  const GLenum db = GL_COLOR_ATTACHMENT0;
+  glDrawBuffers(1, &db);
+  const float zero[4] = {0.0f, 0.0f, 0.0f, 0.0f};
+  glClearBufferfv(GL_COLOR, 0, zero);
+  glFramebufferTexture2D(GL_DRAW_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, 0, 0);
+  glBindFramebuffer(GL_DRAW_FRAMEBUFFER, static_cast<GLuint>(prevFbo));
+  glColorMaski(0, prevMask[0], prevMask[1], prevMask[2], prevMask[3]);
+  if (prevScissor) glEnable(GL_SCISSOR_TEST);
 }
 
 void Gles3Resources::Shutdown() {
@@ -810,6 +871,8 @@ void Gles3Resources::Shutdown() {
     if (t.tex) glDeleteTextures(1, &t.tex);
   }
   textures_.clear();
+  ClearVbL1();
+  ClearIbL1();
   for (auto& [k, vb] : vertexBuffers_) {
     DeleteVertexBufferGl(vb);
   }
@@ -842,6 +905,7 @@ void Gles3Resources::Shutdown() {
   if (linearClampSampler_) { glDeleteSamplers(1, &linearClampSampler_); linearClampSampler_ = 0; }
   if (nearestClampSampler_) { glDeleteSamplers(1, &nearestClampSampler_); nearestClampSampler_ = 0; }
   if (gammaTex_) { glDeleteTextures(1, &gammaTex_); gammaTex_ = 0; }
+  if (clearFbo_) { glDeleteFramebuffers(1, &clearFbo_); clearFbo_ = 0; }
   for (int i = 0; i < 2; ++i) {
     if (vbHalfFence_[i]) { glDeleteSync(vbHalfFence_[i]); vbHalfFence_[i] = nullptr; }
   }
@@ -954,6 +1018,25 @@ void Gles3Resources::FinishRefresh(uint32_t addr, uint32_t size, bool changed, b
   }
 }
 
+bool Gles3Resources::CheckRangeClean(uint32_t physAddr, uint32_t bytes, uint32_t& lastSeq,
+                                     bool& watchArmed) {
+  if (!watch_) return false;
+  const uint32_t phys = physAddr & kPhysicalMask;
+  const uint32_t curSeq = writeSeq_.load(std::memory_order_acquire);
+  if (watchArmed) {
+    if (lastSeq == curSeq) return true;
+    if (!RangeDirtiedSince(phys, phys + bytes, lastSeq)) {
+      lastSeq = curSeq;
+      return true;
+    }
+    watchArmed = false;
+  }
+  ArmWatch(phys, bytes);
+  watchArmed = true;
+  lastSeq = writeSeq_.load(std::memory_order_acquire);
+  return false;
+}
+
 void Gles3Resources::ArmWatch(uint32_t start, uint32_t size) {
   if (watch_ && size > 0) {
     watch_->WatchPhysicalWrites({start & kPhysicalMask, size});
@@ -1006,15 +1089,18 @@ bool Gles3Resources::BeginFrame(uint64_t frame) {
     }
     if ((frame_ & 7u) == 0u && vertexBuffers_.size() > 512u) {
       // Reclaim 16+ frame-old small sliding ring VBs into freeTboPool_ every 8th frame.
+      bool erasedAny = false;
       for (auto it = vertexBuffers_.begin(); it != vertexBuffers_.end();) {
         const uint64_t ageLimit = (it->second.bytes <= 65536u) ? 16u : 300u;
         if (frame_ > it->second.lastFrame + ageLimit) {
           RecycleVertexBufferGl(it->second, true);
           it = vertexBuffers_.erase(it);
+          erasedAny = true;
         } else {
           ++it;
         }
       }
+      if (erasedAny) ClearVbL1();
     }
   } else if ((frame_ & 15u) == 0u && vertexBuffers_.size() > 512u) {
     uint32_t evicted = 0;
@@ -1027,11 +1113,12 @@ bool Gles3Resources::BeginFrame(uint64_t frame) {
         ++it;
       }
     }
+    if (evicted > 0) ClearVbL1();
   }
-  if ((frame_ & 31u) == 0u && indexBuffers_.size() > 128u) {
+  if ((frame_ & 31u) == 0u && indexBuffers_.size() > 256u) {
     uint32_t evicted = 0;
     for (auto it = indexBuffers_.begin(); it != indexBuffers_.end() && evicted < 4u;) {
-      if (frame_ > it->second.lastFrame + 90u) {
+      if (frame_ > it->second.lastFrame + 180u) {
         if (it->second.ebo) glDeleteBuffers(1, &it->second.ebo);
         it = indexBuffers_.erase(it);
         ++evicted;
@@ -1039,6 +1126,7 @@ bool Gles3Resources::BeginFrame(uint64_t frame) {
         ++it;
       }
     }
+    if (evicted > 0) ClearIbL1();
   }
   if ((frame_ & 127u) == 0u && textures_.size() > 256u) {
     uint32_t evicted = 0;
@@ -1063,7 +1151,7 @@ bool Gles3Resources::BeginFrame(uint64_t frame) {
 
 uint32_t Gles3Resources::RowsForClass(uint32_t pitch, uint32_t cls) const {
   if (pitch == 0) return 0;
-  uint32_t rows = pitch >= 1024u ? 720u : std::max(pitch, 360u);
+  uint32_t rows = pitch >= 1024u ? 720u : (pitch <= 160u ? 128u : (pitch <= 320u ? 192u : pitch));
   const uint64_t key = (static_cast<uint64_t>(pitch) << 2) | (cls & 3u);
   if (auto it = classRows_.find(key); it != classRows_.end()) {
     rows = std::max(rows, it->second);
@@ -1105,6 +1193,7 @@ bool Gles3Resources::EnsureRows(uint32_t surfaceInfo, uint32_t rows) {
       ++dt;
     }
   }
+  if (invalidated) ClearTargetL1();
   return invalidated;
 }
 
@@ -1116,6 +1205,11 @@ void Gles3Resources::TargetSize(uint32_t surfaceInfo, uint32_t /*bytesPerSample*
   const uint32_t rows = RowsForClass(pitch, cls);
   widthOut = std::clamp<uint32_t>(static_cast<uint32_t>(std::lround(pitch * scale_)), 1u, 4096u);
   heightOut = std::clamp<uint32_t>(static_cast<uint32_t>(std::lround(rows * scale_)), 1u, 4096u);
+  // Adreno 6xx/7xx UBWC / LRZ / GMEM binning hits a >2x GPU cliff when large render-target
+  // dimensions are not multiples of 16 (e.g. 960x540 -> 540 % 16 == 12 ran 2.16x slower than
+  // 1280x720 on Adreno 710). Align >=64px target dimensions up to multiples of 16.
+  if (widthOut >= 64u) widthOut = std::min<uint32_t>((widthOut + 15u) & ~15u, 4096u);
+  if (heightOut >= 64u) heightOut = std::min<uint32_t>((heightOut + 15u) & ~15u, 4096u);
   scaleXOut = static_cast<float>(widthOut) / static_cast<float>(pitch);
   scaleYOut = static_cast<float>(heightOut) / static_cast<float>(rows);
 }
@@ -1133,9 +1227,15 @@ const Gles3Resources::ColorTarget* Gles3Resources::ColorTargetFor(uint32_t color
 
   const uint64_t key = (static_cast<uint64_t>(base) << 32) | (static_cast<uint64_t>(pitch) << 12) |
                        (static_cast<uint64_t>(canonFmt) << 4) | cls;
+  if (lastColorPtr_ && lastColorKey_ == key) {
+    lastColorPtr_->lastFrame = frame_;
+    return lastColorPtr_;
+  }
   auto it = colorTargets_.find(key);
   if (it != colorTargets_.end()) {
     it->second.lastFrame = frame_;
+    lastColorKey_ = key;
+    lastColorPtr_ = &it->second;
     return &it->second;
   }
 
@@ -1164,6 +1264,7 @@ const Gles3Resources::ColorTarget* Gles3Resources::ColorTargetFor(uint32_t color
   glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
   glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
   glBindTexture(GL_TEXTURE_2D, 0);
+  ClearColorTextureZero(ct.tex);
 
   auto [ins, _] = colorTargets_.emplace(key, ct);
   return &ins->second;
@@ -1171,7 +1272,9 @@ const Gles3Resources::ColorTarget* Gles3Resources::ColorTargetFor(uint32_t color
 
 const Gles3Resources::ColorTarget* Gles3Resources::PrimaryColorTargetAt(uint32_t colorInfo,
                                                                         uint32_t minPitch,
-                                                                        uint32_t cls) const {
+                                                                        uint32_t cls,
+                                                                        int32_t clearBottom) const {
+  if (clearBottom <= 0) return nullptr;
   const uint32_t base = colorInfo & 0xFFFu;
   const uint32_t rawFmt = (colorInfo >> 16) & 0xFu;
   const uint32_t canonFmt =
@@ -1182,6 +1285,10 @@ const Gles3Resources::ColorTarget* Gles3Resources::PrimaryColorTargetAt(uint32_t
   for (const auto& [k, ct] : colorTargets_) {
     if (ct.edramBase != base || !ct.tex) continue;
     if (ct.pitch <= minPitch) continue;
+    // Only redirect a narrow-pitch DI_PT_RECTLIST clear to a wider EDRAM surface when the clear
+    // height actually exceeds the wider target's rows (linear tile-wrap alias clear, e.g. 640x1440
+    // clearing 1280x720). Never steal normal smaller-target clears sharing the same EDRAM base!
+    if (static_cast<uint32_t>(clearBottom) <= ct.rows) continue;
     const uint32_t ctCls = ct.msaa != 0 ? 1u : 0u;
     const int score = ((ctCls == cls) ? 4 : 0) + ((ct.format == canonFmt) ? 2 : 0);
     if (score > bestScore || (score == bestScore && ct.pitch > bestPitch)) {
@@ -1202,9 +1309,15 @@ const Gles3Resources::DepthTarget* Gles3Resources::DepthTargetFor(uint32_t depth
   if (pitch == 0) return nullptr;
 
   const uint64_t key = (static_cast<uint64_t>(base) << 32) | (static_cast<uint64_t>(pitch) << 12) | cls;
+  if (lastDepthPtr_ && lastDepthKey_ == key) {
+    lastDepthPtr_->lastFrame = frame_;
+    return lastDepthPtr_;
+  }
   auto it = depthTargets_.find(key);
   if (it != depthTargets_.end()) {
     it->second.lastFrame = frame_;
+    lastDepthKey_ = key;
+    lastDepthPtr_ = &it->second;
     return &it->second;
   }
 
@@ -1238,7 +1351,9 @@ const Gles3Resources::DepthTarget* Gles3Resources::DepthTargetFor(uint32_t depth
 
 const Gles3Resources::DepthTarget* Gles3Resources::PrimaryDepthTargetAt(uint32_t depthInfo,
                                                                         uint32_t minPitch,
-                                                                        uint32_t cls) const {
+                                                                        uint32_t cls,
+                                                                        int32_t clearBottom) const {
+  if (clearBottom <= 0) return nullptr;
   const uint32_t base = depthInfo & 0xFFFu;
   const DepthTarget* best = nullptr;
   uint32_t bestPitch = minPitch;
@@ -1246,6 +1361,9 @@ const Gles3Resources::DepthTarget* Gles3Resources::PrimaryDepthTargetAt(uint32_t
   for (const auto& [k, dt] : depthTargets_) {
     if (dt.edramBase != base || !dt.tex) continue;
     if (dt.pitch <= minPitch) continue;
+    // Never steal 512x512 dynamic shadow-map rect clears (ed=0x5a0, clearBottom <= 512) onto
+    // a 1280x720 depth target sharing ed=0x5a0; only redirect genuine narrow-pitch alias clears.
+    if (static_cast<uint32_t>(clearBottom) <= dt.rows) continue;
     const uint32_t dtCls = dt.msaa != 0 ? 1u : 0u;
     const int score = (dtCls == cls) ? 2 : 0;
     if (score > bestScore || (score == bestScore && dt.pitch > bestPitch)) {
@@ -1261,13 +1379,19 @@ Gles3Resources::Resolved* Gles3Resources::ResolvedFor(uint32_t base, uint32_t wi
                                                       uint32_t height, GLenum internalFormat,
                                                       bool isDepth) {
   const uint32_t addr = base & 0x1FFFF000u;
+  uint32_t allocW = width;
+  uint32_t allocH = height;
   auto it = resolved_.find(addr);
   if (it != resolved_.end()) {
     Resolved& r = it->second;
-    if (r.width == width && r.height == height && r.internalFormat == internalFormat &&
+    if (r.width >= width && r.height >= height && r.internalFormat == internalFormat &&
         r.isDepth == isDepth && r.tex != 0) {
       r.lastFrame = frame_;
       return &r;
+    }
+    if (r.internalFormat == internalFormat && r.isDepth == isDepth) {
+      allocW = std::max(r.width, width);
+      allocH = std::max(r.height, height);
     }
     if (r.tex) glDeleteTextures(1, &r.tex);
     if (lastFrontbuffer_ == &r) lastFrontbuffer_ = nullptr;
@@ -1275,16 +1399,16 @@ Gles3Resources::Resolved* Gles3Resources::ResolvedFor(uint32_t base, uint32_t wi
 
   Resolved r{};
   r.internalFormat = internalFormat;
-  r.width = width;
-  r.height = height;
+  r.width = allocW;
+  r.height = allocH;
   r.base = addr;
   r.isDepth = isDepth;
   r.lastFrame = frame_;
 
   glGenTextures(1, &r.tex);
   glBindTexture(GL_TEXTURE_2D, r.tex);
-  glTexStorage2D(GL_TEXTURE_2D, 1, internalFormat, static_cast<GLsizei>(width),
-                 static_cast<GLsizei>(height));
+  glTexStorage2D(GL_TEXTURE_2D, 1, internalFormat, static_cast<GLsizei>(allocW),
+                 static_cast<GLsizei>(allocH));
   const GLenum filt = (internalFormat == GL_DEPTH24_STENCIL8) ? GL_NEAREST : GL_LINEAR;
   glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, static_cast<GLint>(filt));
   glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, static_cast<GLint>(filt));
@@ -1294,8 +1418,12 @@ Gles3Resources::Resolved* Gles3Resources::ResolvedFor(uint32_t base, uint32_t wi
     glTexParameteri(GL_TEXTURE_2D, GL_DEPTH_STENCIL_TEXTURE_MODE, GL_DEPTH_COMPONENT);
   }
   glBindTexture(GL_TEXTURE_2D, 0);
+  if (!isDepth) {
+    ClearColorTextureZero(r.tex);
+  }
 
   auto [ins, _] = resolved_.insert_or_assign(addr, r);
+  RebuildResolvedDepthList();
   return &ins->second;
 }
 
@@ -1305,9 +1433,9 @@ const Gles3Resources::Resolved* Gles3Resources::ResolvedAt(uint32_t base) const 
   return it != resolved_.end() ? &it->second : nullptr;
 }
 
-void Gles3Resources::UploadTextureData(GuestTexture& tex, const uint32_t words[6]) {
+void Gles3Resources::UploadTextureData(GuestTexture& tex, const uint32_t words[6], bool wantSrgb) {
   const uint32_t fmtId = words[1] & 0x3Fu;
-  const GlTexFmt fmt = DescribeGlFormat(fmtId, hasS3tc_, hasRgtc_, hasNorm16_);
+  const GlTexFmt fmt = DescribeGlFormat(fmtId, hasS3tc_, hasS3tcSrgb_, hasRgtc_, hasNorm16_, wantSrgb);
   if (!fmt.supported) {
     static std::atomic<uint64_t> s_warnedFmt{0};
     const uint64_t bit = 1ULL << (fmtId & 63u);
@@ -1382,6 +1510,7 @@ void Gles3Resources::UploadTextureData(GuestTexture& tex, const uint32_t words[6
     glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
     glTexStorage2D(target, static_cast<GLsizei>(mipCount), fmt.internalFormat,
                    static_cast<GLsizei>(texW), static_cast<GLsizei>(texH));
+    tex.hwSwizzle = 0x688u;
   } else {
     glBindTexture(target, tex.tex);
     glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
@@ -1453,14 +1582,18 @@ void Gles3Resources::UploadTextureData(GuestTexture& tex, const uint32_t words[6
   tex.mipLevels = mipCount;
   tex.address = baseAddr;
   tex.compressed = fmt.compressed;
+  tex.hwSrgb = fmt.hwSrgb;
   tex.byteSize = static_cast<uint32_t>(std::min<size_t>(faceBytes * faces, totalMem - baseAddr));
   tex.fingerprint = Fingerprint(physBase + baseAddr, tex.byteSize);
   tex.lastCheckedFrame = frame_;
 }
 
 GLuint Gles3Resources::TextureFor(const uint32_t words[6], uint32_t& widthOut, uint32_t& heightOut,
-                                  bool& isCubeOut, const Resolved*& resolvedOut) {
+                                  bool& isCubeOut, const Resolved*& resolvedOut,
+                                  bool* hwSrgbOut, uint32_t** hwSwizzlePtrOut) {
   resolvedOut = nullptr;
+  if (hwSrgbOut) *hwSrgbOut = false;
+  if (hwSwizzlePtrOut) *hwSwizzlePtrOut = nullptr;
   const uint32_t fmtId = words[1] & 0x3Fu;
   const uint32_t baseAddr = (words[1] & 0xFFFFF000u) & kPhysicalMask;
   const uint32_t dimension = (words[5] >> 9) & 3u;
@@ -1479,19 +1612,27 @@ GLuint Gles3Resources::TextureFor(const uint32_t words[6], uint32_t& widthOut, u
         const uint32_t rAddr = baseAddr & 0x1FFFF000u;
         if (lastFrontbuffer_ == r) lastFrontbuffer_ = nullptr;
         if (r->tex) glDeleteTextures(1, &resolved_[rAddr].tex);
+        const bool wasDepth = r->isDepth;
         resolved_.erase(rAddr);
+        if (wasDepth) RebuildResolvedDepthList();
       } else {
         widthOut = r->guestWidth > 0 ? r->guestWidth : r->width;
         heightOut = r->guestHeight > 0 ? r->guestHeight : r->height;
         resolvedOut = r;
+        if (hwSwizzlePtrOut) *hwSwizzlePtrOut = &r->hwSwizzle;
         return r->tex;
       }
     }
   }
 
-  // Match Windows texture key: (baseAddr, format | (dimension << 8), width, height)
+  // Decode pre-swizzle RGB sRGB mode in TMU hardware when RGB are all gamma (3) and A is unsigned (0).
+  const uint32_t rawSigns = (words[0] >> 2) & 0xFFu;
+  const bool wantSrgb = ((rawSigns & 0x3Fu) == 0x3Fu) && (((rawSigns >> 6) & 3u) == 0u);
+
+  // Match Windows texture key: (baseAddr, format | (dimension << 8) | (wantSrgb << 12), width, height)
   uint64_t key = 1469598103934665603ULL;
-  const uint32_t kWords[4] = {baseAddr, fmtId | (dimension << 8), widthOut, heightOut};
+  const uint32_t kWords[4] = {baseAddr, fmtId | (dimension << 8) | (wantSrgb ? (1u << 12) : 0u),
+                              widthOut, heightOut};
   for (uint32_t kw : kWords) {
     key = (key ^ kw) * 1099511628211ULL;
   }
@@ -1528,25 +1669,34 @@ GLuint Gles3Resources::TextureFor(const uint32_t words[6], uint32_t& widthOut, u
         if (changed) {
           t.stableCount = 0;
           if (!watch_) t.dynamicUntilFrame = frame_ + 300u;
-          UploadTextureData(t, words);
+          UploadTextureData(t, words, wantSrgb);
         } else if (!watch_ && t.stableCount < 16u) {
           ++t.stableCount;
         }
       }
     }
-    if (t.tex) return t.tex;
+    if (t.tex) {
+      if (hwSrgbOut) *hwSrgbOut = t.hwSrgb;
+      if (hwSwizzlePtrOut) *hwSwizzlePtrOut = &t.hwSwizzle;
+      return t.tex;
+    }
     return isCubeOut ? whiteTexCube_ : whiteTex2D_;
   }
 
   GuestTexture& t = textures_[key];
   t.lastFrame = frame_;
   t.uploadSeq = writeSeq_.load(std::memory_order_acquire);
-  UploadTextureData(t, words);
+  UploadTextureData(t, words, wantSrgb);
   if (watch_ && t.byteSize > 0) {
     ArmWatch(t.address, t.byteSize);
     t.watchArmed = true;
   }
-  return t.tex ? t.tex : (isCubeOut ? whiteTexCube_ : whiteTex2D_);
+  if (t.tex) {
+    if (hwSrgbOut) *hwSrgbOut = t.hwSrgb;
+    if (hwSwizzlePtrOut) *hwSwizzlePtrOut = &t.hwSwizzle;
+    return t.tex;
+  }
+  return isCubeOut ? whiteTexCube_ : whiteTex2D_;
 }
 
 void Gles3Resources::DeleteVertexBufferGl(VertexBuffer& vb) {
@@ -1669,12 +1819,12 @@ GLuint Gles3Resources::VertexBufferFor(uint32_t address, uint32_t bytes, size_t&
     return vbRing_;
   };
 
-  // Fast path: tiny dynamic vertex buffers (<= 8 KB: particles, UI quads, decals) stream directly
-  // into the persistent coherent SSBO ring on Adreno. On Mali (useVertexTextureBuffers_),
-  // persistent-mapped TBO writes are not TMU-cache-coherent across mid-frame updates (causes
-  // vertex flashing), so Mali always uses the (phys, size) cache + 6-frame retiredTbos_ pool.
+  // Fast path: tiny immediate quads (<= 256 B: 3-vertex DI_PT_RECTLIST quads) stream directly
+  // into the persistent coherent SSBO ring on Adreno. Meshes in (256 B .. 8 KB] use 1-frame
+  // promotion below so static level meshes are cached in dedicated GPU SSBOs while transient
+  // 1-frame guest ring allocations still stream via allocVbRing without glGenBuffers churn!
   const bool ringUsable = vbRingPtr_ && !useVertexTextureBuffers_;
-  if (size <= 8192u && ringUsable) {
+  if (size <= 256u && ringUsable) {
     return allocVbRing(ptr, size);
   }
 
@@ -1683,14 +1833,60 @@ GLuint Gles3Resources::VertexBufferFor(uint32_t address, uint32_t bytes, size_t&
   const uint64_t key = useVertexTextureBuffers_
                            ? ((static_cast<uint64_t>(phys) << 24) | ((size >> 4) & 0xFFFFFFu))
                            : static_cast<uint64_t>(phys);
-  auto it = vertexBuffers_.find(key);
-  if (it != vertexBuffers_.end()) {
-    VertexBuffer& vb = it->second;
+  const uint32_t l1Slot = static_cast<uint32_t>((key >> 4) ^ (key >> 12) ^ (key >> 20)) & 255u;
+  VertexBuffer* foundVb = nullptr;
+  if (vbL1_[l1Slot].ptr && vbL1_[l1Slot].key == key) {
+    foundVb = vbL1_[l1Slot].ptr;
+  } else if (auto it = vertexBuffers_.find(key); it != vertexBuffers_.end()) {
+    foundVb = &it->second;
+    vbL1_[l1Slot] = VbL1Entry{key, foundVb};
+  }
+  if (foundVb) {
+    VertexBuffer& vb = *foundVb;
     const uint64_t prevUsedFrame = vb.lastFrame;
     vb.lastFrame = frame_;
     const uint32_t wanted = useVertexTextureBuffers_ ? size : std::max(size, vb.uploadedBytes);
     if (frame_ <= vb.volatileUntilFrame && size <= 65536u && ringUsable) {
+      if (vb.ssbo) {
+        DeleteVertexBufferGl(vb);
+        vb.bytes = 0;
+        vb.watchArmed = false;
+      }
       return allocVbRing(ptr, size);
+    }
+    if (vb.ssbo == 0 && ringUsable) {
+      if (prevUsedFrame == frame_) {
+        if (wanted > vb.uploadedBytes || Fingerprint(ptr, size) != vb.fingerprint) {
+          vb.volatileUntilFrame = frame_ + 60u;
+        }
+        return allocVbRing(ptr, size);
+      }
+      const uint64_t fp = Fingerprint(ptr, wanted);
+      if (wanted != vb.uploadedBytes || fp != vb.fingerprint) {
+        vb.uploadedBytes = wanted;
+        vb.fingerprint = fp;
+        vb.volatileUntilFrame = frame_ + 60u;
+        return allocVbRing(ptr, size);
+      }
+      // Survived into a subsequent frame unchanged -> promote to a dedicated GPU SSBO!
+      const uint32_t allocCap = (wanted + wanted / 8u + 4095u) & ~4095u;
+      const uint32_t uploadLen =
+          static_cast<uint32_t>(std::min<size_t>(allocCap, physSize_ - phys));
+      vb.bytes = allocCap;
+      vb.uploadedBytes = wanted;
+      vb.uploadSeq = writeSeq_.load(std::memory_order_acquire);
+      vb.lastCheckedFrame = frame_;
+      if (watch_) {
+        ArmWatch(phys, wanted);
+        vb.watchArmed = true;
+      }
+      glGenBuffers(1, &vb.ssbo);
+      glBindBuffer(GL_SHADER_STORAGE_BUFFER, vb.ssbo);
+      glBufferData(GL_SHADER_STORAGE_BUFFER, static_cast<GLsizeiptr>(allocCap), nullptr,
+                   GL_DYNAMIC_DRAW);
+      glBufferSubData(GL_SHADER_STORAGE_BUFFER, 0, static_cast<GLsizeiptr>(uploadLen), ptr);
+      glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0);
+      return vb.ssbo;
     }
     if (useVertexTextureBuffers_ ? (wanted != vb.bytes || vb.tbo == 0) : (wanted > vb.bytes)) {
       vb.uploadSeq = writeSeq_.load(std::memory_order_acquire);
@@ -1741,14 +1937,20 @@ GLuint Gles3Resources::VertexBufferFor(uint32_t address, uint32_t bytes, size_t&
         vb.uploadSeq = seqBeforeRead;
       }
       if (changed) {
-        if (fp != vb.fingerprint && wanted <= vb.uploadedBytes) {
-          if (!watch_) {
-            vb.volatileUntilFrame = frame_ + 180u;
-            vb.stableCount = 0;
-          }
-          if (size <= 65536u && ringUsable) {
-            return allocVbRing(ptr, size);
-          }
+        if (fp != vb.fingerprint && wanted <= vb.uploadedBytes &&
+            frame_ <= vb.volatileUntilFrame && size <= 65536u && ringUsable) {
+          // Volatile buffer (rewritten >= 3 times): destroy the stale SSBO so it can never be
+          // bound after volatileUntilFrame expires, and stream cleanly via the persistent ring.
+          DeleteVertexBufferGl(vb);
+          vb.bytes = 0;
+          vb.uploadedBytes = size;
+          vb.fingerprint = fp;
+          vb.watchArmed = false;
+          return allocVbRing(ptr, size);
+        }
+        if (fp != vb.fingerprint && !watch_) {
+          vb.volatileUntilFrame = frame_ + 180u;
+          vb.stableCount = 0;
         }
         vb.uploadedBytes = wanted;
         vb.fingerprint = fp;
@@ -1774,22 +1976,32 @@ GLuint Gles3Resources::VertexBufferFor(uint32_t address, uint32_t bytes, size_t&
   // Hard cap live SSBO/TBO count so rapid ring-buffer sub-allocations never exhaust mmap slots,
   // while NEVER evicting active static level meshes used on frame_ or frame_ - 1!
   if (vertexBuffers_.size() >= 4096u) {
+    bool erasedAny = false;
     for (auto vit = vertexBuffers_.begin(); vit != vertexBuffers_.end();) {
       if (vit->second.lastFrame + 2u < frame_) {
         RecycleVertexBufferGl(vit->second, frame_ >= vit->second.lastFrame + 6u);
         vit = vertexBuffers_.erase(vit);
+        erasedAny = true;
       } else {
         ++vit;
       }
     }
+    if (erasedAny) ClearVbL1();
   }
 
   VertexBuffer& vb = vertexBuffers_[key];
+  vbL1_[l1Slot] = VbL1Entry{key, &vb};
   vb.address = phys;
   vb.uploadSeq = writeSeq_.load(std::memory_order_acquire);
   vb.fingerprint = Fingerprint(ptr, size);
   vb.lastFrame = frame_;
   vb.lastCheckedFrame = frame_;
+  if (size <= 8192u && ringUsable) {
+    // Stage 1 for <= 8 KB buffers on Adreno: stream via vbRing_ on first frame; promote to a
+    // dedicated GPU SSBO on the next frame if reused with identical contents.
+    vb.uploadedBytes = size;
+    return allocVbRing(ptr, size);
+  }
   if (watch_) {
     ArmWatch(phys, size);
     vb.watchArmed = true;
@@ -1828,9 +2040,16 @@ GLuint Gles3Resources::StaticIndexBufferFor(uint32_t address, uint32_t count, bo
                               resetEnabled ? resetIdx : 0u};
   for (uint32_t kw : kWords) key = (key ^ kw) * 1099511628211ULL;
 
-  auto it = indexBuffers_.find(key);
-  if (it != indexBuffers_.end()) {
-    StaticIndexBuffer& ib = it->second;
+  const uint32_t ibL1Slot = static_cast<uint32_t>(key ^ (key >> 11) ^ (key >> 22)) & 255u;
+  StaticIndexBuffer* foundIb = nullptr;
+  if (ibL1_[ibL1Slot].ptr && ibL1_[ibL1Slot].key == key) {
+    foundIb = ibL1_[ibL1Slot].ptr;
+  } else if (auto it = indexBuffers_.find(key); it != indexBuffers_.end()) {
+    foundIb = &it->second;
+    ibL1_[ibL1Slot] = IbL1Entry{key, foundIb};
+  }
+  if (foundIb) {
+    StaticIndexBuffer& ib = *foundIb;
     const uint64_t prevUsedFrame = ib.lastFrame;
     ib.lastFrame = frame_;
     if (ib.ebo) {
@@ -1914,18 +2133,22 @@ GLuint Gles3Resources::StaticIndexBufferFor(uint32_t address, uint32_t count, bo
     return 0;
   }
 
-  if (indexBuffers_.size() >= 1024u) {
+  if (indexBuffers_.size() >= 4096u) {
+    bool erasedAny = false;
     for (auto iit = indexBuffers_.begin(); iit != indexBuffers_.end();) {
-      if (iit->second.lastFrame < frame_) {
+      if (iit->second.lastFrame + 30u < frame_) {
         if (iit->second.ebo) glDeleteBuffers(1, &iit->second.ebo);
         iit = indexBuffers_.erase(iit);
+        erasedAny = true;
       } else {
         ++iit;
       }
     }
+    if (erasedAny) ClearIbL1();
   }
 
   StaticIndexBuffer& ib = indexBuffers_[key];
+  ibL1_[ibL1Slot] = IbL1Entry{key, &ib};
   ib.address = phys;
   ib.count = count;
   ib.rawBytes = rawBytes;
@@ -1947,10 +2170,26 @@ GLuint Gles3Resources::SamplerFor(const uint32_t words[6]) {
   if (minFilter == 3u) minFilter = 1u;
   if (mipFilter == 3u) mipFilter = 1u;
   const uint32_t borderColor = words[5] & 3u;
+  const bool noMips = (mipFilter == 2u);
+  const bool magLin = (magFilter != 0u);
+  const bool minLin = (minFilter != 0u);
+  // Respect Xenos fetch-constant aniso_filter (bits 25..27) instead of forcing 4x AF on
+  // normal maps, lightmaps, masks, water ripples, and particles that requested 1x filtering.
+  const uint32_t anisoBits = (words[3] >> 25) & 7u;
+  uint32_t effAniso = 1u;
+  if (!noMips && maxDeviceAniso_ > 1.0f && anisotropy_ > 1u && minLin) {
+    if (anisoBits == 0u) {
+      effAniso = 1u;
+    } else if (anisoBits <= 4u) {
+      effAniso = std::min(anisotropy_, 1u << anisoBits);
+    } else {
+      effAniso = std::min(anisotropy_, 2u);
+    }
+  }
   const uint64_t key = static_cast<uint64_t>(clampX) | (static_cast<uint64_t>(clampY) << 3) |
                        (static_cast<uint64_t>(clampZ) << 6) | (static_cast<uint64_t>(magFilter) << 9) |
                        (static_cast<uint64_t>(minFilter) << 11) | (static_cast<uint64_t>(mipFilter) << 13) |
-                       (static_cast<uint64_t>(borderColor) << 15) | (static_cast<uint64_t>(anisotropy_) << 20);
+                       (static_cast<uint64_t>(borderColor) << 15) | (static_cast<uint64_t>(effAniso) << 20);
   if (auto it = samplers_.find(key); it != samplers_.end()) return it->second;
 
   GLuint s = 0;
@@ -1965,9 +2204,6 @@ GLuint Gles3Resources::SamplerFor(const uint32_t words[6]) {
   glSamplerParameteri(s, GL_TEXTURE_WRAP_T, static_cast<GLint>(wrap(clampY)));
   glSamplerParameteri(s, GL_TEXTURE_WRAP_R, static_cast<GLint>(wrap(clampZ)));
 
-  const bool noMips = (mipFilter == 2u);
-  const bool magLin = (magFilter != 0u);
-  const bool minLin = (minFilter != 0u);
   const GLenum glMag = magLin ? GL_LINEAR : GL_NEAREST;
   GLenum glMin = minLin ? GL_LINEAR : GL_NEAREST;
   if (!noMips) {
@@ -1981,9 +2217,9 @@ GLuint Gles3Resources::SamplerFor(const uint32_t words[6]) {
   glSamplerParameteri(s, GL_TEXTURE_MIN_FILTER, static_cast<GLint>(glMin));
   glSamplerParameterf(s, GL_TEXTURE_MIN_LOD, 0.0f);
   glSamplerParameterf(s, GL_TEXTURE_MAX_LOD, noMips ? 0.0f : 1000.0f);
-  if (!noMips && maxDeviceAniso_ > 1.0f && anisotropy_ > 1u && minLin) {
+  if (effAniso > 1u) {
     glSamplerParameterf(s, kGlTextureMaxAnisotropy,
-                        std::min(maxDeviceAniso_, static_cast<float>(anisotropy_)));
+                        std::min(maxDeviceAniso_, static_cast<float>(effAniso)));
   }
   if (hasBorderClamp_) {
     const float white = (borderColor == 1u) ? 1.0f : 0.0f;

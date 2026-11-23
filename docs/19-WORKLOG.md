@@ -6,6 +6,25 @@ holds the current snapshot; this file holds the history.
 
 ---
 
+## Session 29 — 2026-11-23 — `v0.0.7.6-experimental` (2×–3× Performance Leap, Bloom Ghosting Fix, Weapon & 360p Fixes, Zero-Stutter Async Shaders)
+
+- **Adreno 710 540p Alignment Cliff Eliminated (`gles3_resources.cpp`, `gles3_backend.cpp`):**
+  - On-device GPU pass profiling revealed `960×540` ran >2× slower than `1280×720` (`23.1 FPS` vs `43.3 FPS` in the identical 1,012-draw waterstream spot) because height `540` (`540 % 16 == 12`) broke Adreno UBWC/LRZ/GMEM alignment. Aligning render targets `>= 64px` up to multiples of 16 (`540p` → `960×544`, `900p` → `1600×912`) jumped 540p from `22 FPS → 46+ FPS` immediately.
+- **Shader, VRS, Resolve & Aniso Optimizations (`xenos_glsl.cpp`, `gles3_shaders.h/.cpp`, `gles3_backend.cpp`, `gles3_resources.cpp`):**
+  - Implemented safe clamped hybrid FP16 (`mediump`) fragment shaders (`v13`) with direct `highp p_vN` UV reads, live-input & dead-code pruning, `BS1_PIXEL_GEN` specialization, and automatic `BS1_HIGHP` FP32 promotion for shaders sampling 24-bit depth textures.
+  - Enabled hardware VRS (`GL_EXT_fragment_shading_rate` + `KEEP/KEEP` combiner ops / `GL_QCOM_shading_rate` fallback) at `2×2` on 3D HDR `GL_RGBA16F` passes at 540p+, safe consecutive 3D water refraction resolve coalescing, and Xenos-faithful anisotropic filtering (`words[3]` bits 25..27).
+- **CPU Draw Loop & Stutter-Free Shader Compiler (`android_custom_driver.h/.cpp`, `gles3_backend.cpp`, `gles3_resources.h/.cpp`, `gles3_shaders.h/.cpp`):**
+  - Enabled `EGL_KHR_create_context_no_error`, bulk zero-division PM4 register/constant loads, 256-entry write-watch-validated shader microcode cache, 256-entry L1 VB/IB caches, 4096-entry static EBO cap, per-RT dirty blend tracking, and eliminated unused 2 KB `DrawConstants` UBO re-uploads.
+  - Removed blocking render-thread `TryLoadProgramBinary()` disk opens during in-flight async compiles and ran 2 background compiler threads at `nice 10` (while keeping `BS1-GLES3` at normal priority so XMA audio is never starved).
+- **Visual Fixes Verified on Galaxy A36 (`SM_A366B`):**
+  - **Bloom/DOF Upward Ghosting Fixed:** Added `texUvScale[16]` so normalized UVs scale by `fetchSize / resolvedSize` (`320×180` inside `320×184` Xenos tile-aligned bloom targets across 18 ping-pong passes).
+  - **Garbled Weapon Meshes Fixed:** Volatile vertex buffers now delete stale SSBOs when switching to ring mode instead of trapping outdated vertices behind a freshly updated fingerprint.
+  - **360p Pink Edge Lines Fixed:** Removed unsafe partial-target `glInvalidateFramebuffer` on padded bloom rows and zero-cleared new color/resolved textures via `ClearColorTextureZero()`.
+  - Guarded `PrimaryColorTargetAt` / `PrimaryDepthTargetAt` with `clearBottom > rows`.
+- Cleaned temporary GPU profiler hooks and published `v0.0.7.6-experimental`.
+
+---
+
 ## Session 28 — 2026-11-22 — `v0.0.7.2-experimental` (Flowing Water / Refraction & Vertex Stretch Hotfix + Startup Input Fix)
 
 - **Flowing Water Rainbow Flash & Vertex Stretch Fixed (`gles3_backend.cpp`, `gles3_resources.cpp`):**

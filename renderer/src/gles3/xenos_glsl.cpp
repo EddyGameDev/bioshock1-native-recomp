@@ -44,7 +44,48 @@ struct Translator {
   bool relativeConstants = false;
   uint32_t lastFullVertexSlot = 0;
 
+  // Dataflow & usage tracking for dead-code / dead-interpolator elimination and hybrid FP16.
+  uint8_t uncondWritten[32] = {};
+  uint32_t liveInputMask = 0;
+  uint32_t directPvMask = 0;
+  uint32_t texCoordGprMask = 0;
+  uint32_t interpFeeders[32] = {};
+  uint32_t curAluInterpReads = 0;
+  int controlDepth = 0;
+  bool usesA0 = false;
+  bool usesP0 = false;
+  bool usesAL = false;
+  bool usesPC = false;
+  bool usesLoopStack = false;
+  bool usesTexLod = false;
+  bool usesFetched = false;
+  bool usesPs = false;
+  bool usesCubeMap = false;
+  bool usesCubeDir = false;
+  bool usesMax4 = false;
+  bool usesBlend1 = false;
+  bool usesSafeExp2 = false;
+  bool usesSafeRcp = false;
+  bool usesSafeRsq = false;
+  bool usesHuge = false;
+
   Translator(const std::vector<uint32_t>& w, bool p) : words(w), pixel(p) {}
+
+  void MarkTempRead(uint32_t reg, uint8_t compMask) {
+    if (!pixel) return;
+    if (reg & 0x40u) {
+      liveInputMask |= 0xFFFFu;
+      usesAL = true;
+      return;
+    }
+    const uint32_t r = reg & 0x1Fu;
+    if (r < 16u && (compMask & ~uncondWritten[r]) != 0u) {
+      liveInputMask |= (1u << r);
+    }
+    if (r < 16u && uncondWritten[r] == 0u) {
+      curAluInterpReads |= (1u << r);
+    }
+  }
 
   uint32_t RegisterVertexSlot(uint32_t slot) {
     auto it = vertexSlotToBinding.find(slot);
@@ -59,6 +100,7 @@ struct Translator {
     const char* arr = pixel ? "pc" : "vc";
     if (relative) {
       relativeConstants = true;
+      usesA0 = true;
       return Format("%s[(a0 + %d) & 255]", arr, static_cast<int>(index & 0xFFu));
     }
     constantsRead.insert(index & 0xFFu);
@@ -107,8 +149,17 @@ struct Translator {
                      bool relative) {
     std::string base;
     if (temporary) {
-      base = (reg & 0x40u) ? Format("r[(%d + aL) & 31]", static_cast<int>(reg & 0x1Fu))
-                           : Format("r[%u]", reg & 0x1Fu);
+      if (reg & 0x40u) {
+        usesAL = true;
+        base = Format("r[(%d + aL) & 31]", static_cast<int>(reg & 0x1Fu));
+      } else {
+        base = Format("r[%u]", reg & 0x1Fu);
+      }
+      uint8_t readMask = 0;
+      for (uint32_t i = 0; i < 4; ++i) {
+        readMask |= static_cast<uint8_t>(1u << ((i + ((swizzle >> (i * 2)) & 3u)) & 3u));
+      }
+      MarkTempRead(reg, readMask);
     } else {
       base = Constant(reg, relative);
     }
@@ -122,20 +173,31 @@ struct Translator {
   }
 
   void ScalarPair(uint32_t reg, bool temporary, uint32_t swizzle, bool negate, bool absolute,
-                  bool relative, bool vectorTakesThree, std::string& a, std::string& b,
-                  std::string& single) {
+                  bool relative, bool vectorTakesThree, bool readPair, bool readSingle,
+                  std::string& a, std::string& b, std::string& single) {
     std::string base;
+    const uint32_t laneA = vectorTakesThree ? 2u : 3u;
+    const uint32_t laneB = vectorTakesThree ? 3u : 0u;
+    const uint32_t compA = (laneA + ((swizzle >> (laneA * 2)) & 3u)) & 3u;
+    const uint32_t compB = (laneB + ((swizzle >> (laneB * 2)) & 3u)) & 3u;
+    const uint32_t compS = (3u + ((swizzle >> 6) & 3u)) & 3u;
     if (temporary) {
-      base = (reg & 0x40u) ? Format("r[(%d + aL) & 31]", static_cast<int>(reg & 0x1Fu))
-                           : Format("r[%u]", reg & 0x1Fu);
+      if (reg & 0x40u) {
+        usesAL = true;
+        base = Format("r[(%d + aL) & 31]", static_cast<int>(reg & 0x1Fu));
+      } else {
+        base = Format("r[%u]", reg & 0x1Fu);
+      }
+      uint8_t readMask = 0;
+      if (readPair) readMask |= static_cast<uint8_t>((1u << compA) | (1u << compB));
+      if (readSingle) readMask |= static_cast<uint8_t>(1u << compS);
+      if (readMask) MarkTempRead(reg, readMask);
     } else {
       base = Constant(reg, relative);
     }
-    const uint32_t laneA = vectorTakesThree ? 2u : 3u;
-    const uint32_t laneB = vectorTakesThree ? 3u : 0u;
-    a = base + "." + kComponents[(laneA + ((swizzle >> (laneA * 2)) & 3u)) & 3u];
-    b = base + "." + kComponents[(laneB + ((swizzle >> (laneB * 2)) & 3u)) & 3u];
-    single = base + "." + kComponents[(3u + ((swizzle >> 6) & 3u)) & 3u];
+    a = base + "." + kComponents[compA];
+    b = base + "." + kComponents[compB];
+    single = base + "." + kComponents[compS];
     if (absolute) {
       single = "abs(" + single + ")";
       a = "abs(" + a + ")";
@@ -175,7 +237,7 @@ struct Translator {
     return "oUnused";
   }
 
-  void Alu(uint32_t d0, uint32_t d1, uint32_t d2) {
+  void Alu(uint32_t d0, uint32_t d1, uint32_t d2, bool psNeededAfter) {
     const uint32_t vectorDest = d0 & 0x3Fu;
     const bool absoluteConstants = ((d0 >> 7) & 1u) != 0;
     const uint32_t scalarDest = (d0 >> 8) & 0x3Fu;
@@ -209,215 +271,285 @@ struct Translator {
     const bool rel2 = !temp2 && (temp1 ? relative0 : relative1);
     const bool rel3 = !temp3 && ((temp1 && temp2) ? relative0 : relative1);
 
-    const std::string a = Source(reg1, temp1, swizzle1, negate1,
-                                 temp1 ? (reg1 & 0x80u) != 0 : absoluteConstants, rel1);
-    const std::string b = Source(reg2, temp2, swizzle2, negate2,
-                                 temp2 ? (reg2 & 0x80u) != 0 : absoluteConstants, rel2);
-    const std::string c = Source(reg3, temp3, swizzle3, negate3,
-                                 temp3 ? (reg3 & 0x80u) != 0 : absoluteConstants, rel3);
-    std::string sa, sb, s1;
-    const bool vectorTakesThree =
-        vectorOpcode == 11 || (vectorOpcode >= 12 && vectorOpcode <= 14) || vectorOpcode == 17;
-    ScalarPair(reg3, temp3, swizzle3, negate3, temp3 ? (reg3 & 0x80u) != 0 : absoluteConstants,
-               rel3, vectorTakesThree, sa, sb, s1);
+    const bool vectorKill = (vectorOpcode >= 24u && vectorOpcode <= 27u);
+    const bool vectorHasSideEffect =
+        (vectorKill && pixel) || (vectorOpcode >= 20u && vectorOpcode <= 23u) || vectorOpcode == 29u;
+    const bool needVec = (vectorMask != 0u) || vectorHasSideEffect;
 
-    Line("{");
-    ++indent;
+    const bool scalarIsKill = (scalarOpcode >= 35u && scalarOpcode <= 39u);
+    const bool scalarHasSideEffect =
+        (scalarIsKill && pixel) || scalarOpcode == 23u || scalarOpcode == 24u ||
+        (scalarOpcode >= 27u && scalarOpcode <= 34u);
+    const bool needScalar =
+        (scalarMask != 0u) || scalarHasSideEffect ||
+        (psNeededAfter && (scalarOpcode != 50u || scalarClamp));
+    if (!needVec && !needScalar) return;
+
+    curAluInterpReads = 0;
+    const bool vectorTakesThree =
+        vectorOpcode == 11u || (vectorOpcode >= 12u && vectorOpcode <= 14u) || vectorOpcode == 17u;
+    const bool vectorUsesB =
+        vectorOpcode != 8u && vectorOpcode != 9u && vectorOpcode != 10u && vectorOpcode != 19u;
+    std::string a, b, c;
+    if (needVec) {
+      a = Source(reg1, temp1, swizzle1, negate1,
+                 temp1 ? (reg1 & 0x80u) != 0 : absoluteConstants, rel1);
+      if (vectorUsesB) {
+        b = Source(reg2, temp2, swizzle2, negate2,
+                   temp2 ? (reg2 & 0x80u) != 0 : absoluteConstants, rel2);
+      }
+      if (vectorTakesThree) {
+        c = Source(reg3, temp3, swizzle3, negate3,
+                   temp3 ? (reg3 & 0x80u) != 0 : absoluteConstants, rel3);
+      }
+    }
+    std::string sa, sb, s1;
+    if (needScalar && !(scalarOpcode >= 42u && scalarOpcode <= 47u) &&
+        scalarOpcode != 33u && scalarOpcode != 50u) {
+      const bool readPair =
+          scalarOpcode == 0u || scalarOpcode == 2u || scalarOpcode == 4u || scalarOpcode == 5u ||
+          scalarOpcode == 6u || scalarOpcode == 23u || scalarOpcode == 24u || scalarOpcode == 25u;
+      ScalarPair(reg3, temp3, swizzle3, negate3, temp3 ? (reg3 & 0x80u) != 0 : absoluteConstants,
+                 rel3, vectorTakesThree, readPair, !readPair, sa, sb, s1);
+    }
+
+    const bool needScope = isPredicated || (vectorMask != 0u);
+    if (needScope) {
+      Line("{");
+      ++indent;
+    }
     if (isPredicated) {
+      usesP0 = true;
       Line(Format("if (p0 == %s) {", predicateCondition ? "true" : "false"));
       ++indent;
     }
 
     std::string vector;
     bool kill = false;
-    switch (vectorOpcode) {
-      case 0:  vector = Format("(%s + %s)", a.c_str(), b.c_str()); break;
-      case 1:  vector = Format("mulL(%s, %s)", a.c_str(), b.c_str()); break;
-      case 2:  vector = Format("max(%s, %s)", a.c_str(), b.c_str()); break;
-      case 3:  vector = Format("min(%s, %s)", a.c_str(), b.c_str()); break;
-      case 4:  vector = Format("vec4(equal(%s, %s))", a.c_str(), b.c_str()); break;
-      case 5:  vector = Format("vec4(greaterThan(%s, %s))", a.c_str(), b.c_str()); break;
-      case 6:  vector = Format("vec4(greaterThanEqual(%s, %s))", a.c_str(), b.c_str()); break;
-      case 7:  vector = Format("vec4(notEqual(%s, %s))", a.c_str(), b.c_str()); break;
-      case 8:  vector = Format("fract(%s)", a.c_str()); break;
-      case 9:  vector = Format("trunc(%s)", a.c_str()); break;
-      case 10: vector = Format("floor(%s)", a.c_str()); break;
-      case 11: vector = Format("(mulL(%s, %s) + %s)", a.c_str(), b.c_str(), c.c_str()); break;
-      case 12: vector = Format("blend4(vec4(equal(%s, vec4(0.0))), %s, %s)", a.c_str(), b.c_str(), c.c_str()); break;
-      case 13: vector = Format("blend4(vec4(greaterThanEqual(%s, vec4(0.0))), %s, %s)", a.c_str(), b.c_str(), c.c_str()); break;
-      case 14: vector = Format("blend4(vec4(greaterThan(%s, vec4(0.0))), %s, %s)", a.c_str(), b.c_str(), c.c_str()); break;
-      case 15: vector = Format("vec4(dot(mulL(%s, %s), vec4(1.0)))", a.c_str(), b.c_str()); break;
-      case 16: vector = Format("vec4(dot(mulL(%s, %s).xyz, vec3(1.0)))", a.c_str(), b.c_str()); break;
-      case 17: vector = Format("vec4(dot(mulL(%s, %s).xy, vec2(1.0)) + (%s).x)", a.c_str(), b.c_str(), c.c_str()); break;
-      case 18: vector = Format("cubeMap(%s, %s)", a.c_str(), b.c_str()); break;
-      case 19: vector = Format("vec4(max4(%s))", a.c_str()); break;
-      case 20:
-        vector = Format("vec4((%s).w == 0.0 ? 0.0 : (%s).x + 1.0)", a.c_str(), b.c_str());
-        Line(Format("p0 = ((%s).w == 0.0) && ((%s).x == 0.0);", a.c_str(), b.c_str()));
-        break;
-      case 21:
-        vector = Format("vec4((%s).w == 0.0 ? 0.0 : (%s).x + 1.0)", a.c_str(), b.c_str());
-        Line(Format("p0 = ((%s).w == 0.0) && ((%s).x != 0.0);", a.c_str(), b.c_str()));
-        break;
-      case 22:
-        vector = Format("vec4((%s).w == 0.0 ? 0.0 : (%s).x + 1.0)", a.c_str(), b.c_str());
-        Line(Format("p0 = ((%s).w == 0.0) && ((%s).x > 0.0);", a.c_str(), b.c_str()));
-        break;
-      case 23:
-        vector = Format("vec4((%s).w == 0.0 ? 0.0 : (%s).x + 1.0)", a.c_str(), b.c_str());
-        Line(Format("p0 = ((%s).w == 0.0) && ((%s).x >= 0.0);", a.c_str(), b.c_str()));
-        break;
-      case 24: vector = Format("vec4(equal(%s, %s))", a.c_str(), b.c_str()); kill = true; break;
-      case 25: vector = Format("vec4(greaterThan(%s, %s))", a.c_str(), b.c_str()); kill = true; break;
-      case 26: vector = Format("vec4(greaterThanEqual(%s, %s))", a.c_str(), b.c_str()); kill = true; break;
-      case 27: vector = Format("vec4(notEqual(%s, %s))", a.c_str(), b.c_str()); kill = true; break;
-      case 28: vector = Format("vec4(1.0, (%s).y * (%s).y, (%s).z, (%s).w)", a.c_str(), b.c_str(), a.c_str(), b.c_str()); break;
-      case 29:
-        vector = Format("max(%s, %s)", a.c_str(), b.c_str());
-        Line(Format("a0 = clamp(int(floor((%s).w + 0.5)), -256, 255);", a.c_str()));
-        break;
-      default:
-        out.problem = Format("vector opcode %u", vectorOpcode);
-        vector = "vec4(0.0)";
-        break;
-    }
+    if (needVec) {
+      switch (vectorOpcode) {
+        case 0:  vector = Format("(%s + %s)", a.c_str(), b.c_str()); break;
+        case 1:  vector = Format("(%s * %s)", a.c_str(), b.c_str()); break;
+        case 2:  vector = Format("max(%s, %s)", a.c_str(), b.c_str()); break;
+        case 3:  vector = Format("min(%s, %s)", a.c_str(), b.c_str()); break;
+        case 4:  vector = Format("vec4(equal(%s, %s))", a.c_str(), b.c_str()); break;
+        case 5:  vector = Format("vec4(greaterThan(%s, %s))", a.c_str(), b.c_str()); break;
+        case 6:  vector = Format("vec4(greaterThanEqual(%s, %s))", a.c_str(), b.c_str()); break;
+        case 7:  vector = Format("vec4(notEqual(%s, %s))", a.c_str(), b.c_str()); break;
+        case 8:  vector = Format("fract(%s)", a.c_str()); break;
+        case 9:  vector = Format("trunc(%s)", a.c_str()); break;
+        case 10: vector = Format("floor(%s)", a.c_str()); break;
+        case 11: vector = Format("(%s * %s + %s)", a.c_str(), b.c_str(), c.c_str()); break;
+        case 12: vector = Format("mix(%s, %s, equal(%s, vec4(0.0)))", c.c_str(), b.c_str(), a.c_str()); break;
+        case 13: vector = Format("mix(%s, %s, greaterThanEqual(%s, vec4(0.0)))", c.c_str(), b.c_str(), a.c_str()); break;
+        case 14: vector = Format("mix(%s, %s, greaterThan(%s, vec4(0.0)))", c.c_str(), b.c_str(), a.c_str()); break;
+        case 15: vector = Format("vec4(dot(%s, %s))", a.c_str(), b.c_str()); break;
+        case 16: vector = Format("vec4(dot((%s).xyz, (%s).xyz))", a.c_str(), b.c_str()); break;
+        case 17: vector = Format("vec4(dot((%s).xy, (%s).xy) + (%s).x)", a.c_str(), b.c_str(), c.c_str()); break;
+        case 18: usesCubeMap = true; vector = Format("cubeMap(%s, %s)", a.c_str(), b.c_str()); break;
+        case 19: usesMax4 = true; vector = Format("vec4(max4(%s))", a.c_str()); break;
+        case 20:
+          usesP0 = true;
+          vector = Format("vec4((%s).w == 0.0 ? 0.0 : (%s).x + 1.0)", a.c_str(), b.c_str());
+          Line(Format("p0 = ((%s).w == 0.0) && ((%s).x == 0.0);", a.c_str(), b.c_str()));
+          break;
+        case 21:
+          usesP0 = true;
+          vector = Format("vec4((%s).w == 0.0 ? 0.0 : (%s).x + 1.0)", a.c_str(), b.c_str());
+          Line(Format("p0 = ((%s).w == 0.0) && ((%s).x != 0.0);", a.c_str(), b.c_str()));
+          break;
+        case 22:
+          usesP0 = true;
+          vector = Format("vec4((%s).w == 0.0 ? 0.0 : (%s).x + 1.0)", a.c_str(), b.c_str());
+          Line(Format("p0 = ((%s).w == 0.0) && ((%s).x > 0.0);", a.c_str(), b.c_str()));
+          break;
+        case 23:
+          usesP0 = true;
+          vector = Format("vec4((%s).w == 0.0 ? 0.0 : (%s).x + 1.0)", a.c_str(), b.c_str());
+          Line(Format("p0 = ((%s).w == 0.0) && ((%s).x >= 0.0);", a.c_str(), b.c_str()));
+          break;
+        case 24: vector = Format("vec4(equal(%s, %s))", a.c_str(), b.c_str()); kill = true; break;
+        case 25: vector = Format("vec4(greaterThan(%s, %s))", a.c_str(), b.c_str()); kill = true; break;
+        case 26: vector = Format("vec4(greaterThanEqual(%s, %s))", a.c_str(), b.c_str()); kill = true; break;
+        case 27: vector = Format("vec4(notEqual(%s, %s))", a.c_str(), b.c_str()); kill = true; break;
+        case 28: vector = Format("vec4(1.0, (%s).y * (%s).y, (%s).z, (%s).w)", a.c_str(), b.c_str(), a.c_str(), b.c_str()); break;
+        case 29:
+          usesA0 = true;
+          vector = Format("max(%s, %s)", a.c_str(), b.c_str());
+          Line(Format("a0 = clamp(int(floor((%s).w + 0.5)), -256, 255);", a.c_str()));
+          break;
+        default:
+          out.problem = Format("vector opcode %u", vectorOpcode);
+          vector = "vec4(0.0)";
+          break;
+      }
 
-    if (kill && pixel) {
-      out.usesKill = true;
-      Line(Format("if (any(notEqual(%s, vec4(0.0)))) discard;", vector.c_str()));
+      if (kill && pixel) {
+        out.usesKill = true;
+        Line(Format("if (any(notEqual(%s, vec4(0.0)))) discard;", vector.c_str()));
+      }
     }
 
     std::string vectorDestination;
     if (vectorMask != 0) {
       if (vectorClamp) vector = "clamp(" + vector + ", vec4(0.0), vec4(1.0))";
       vectorDestination = Destination(vectorDest, exported);
-      Line(Format("vec4 vectorValue = (%s);", vector.c_str()));
+      if (pixel && !exported) {
+        Line(Format("BS1_P_%u vec4 vectorValue = (%s);", vectorDest & 0x1Fu, vector.c_str()));
+      } else {
+        Line(Format("vec4 vectorValue = (%s);", vector.c_str()));
+      }
     }
 
     std::string scalar;
     bool scalarKill = false;
-    switch (scalarOpcode) {
-      case 0:  scalar = Format("(%s + %s)", sa.c_str(), sb.c_str()); break;
-      case 1:  scalar = Format("(%s + ps)", s1.c_str()); break;
-      case 2:  scalar = Format("mulL1(%s, %s)", sa.c_str(), sb.c_str()); break;
-      case 3:  scalar = Format("mulL1(%s, ps)", s1.c_str()); break;
-      case 4:
-        scalar = Format("((ps == -3.402823466e38 || isnan(ps) || isnan(%s) || %s <= 0.0) ? -3.402823466e38 : %s * ps)",
-                        sb.c_str(), sb.c_str(), sa.c_str());
-        break;
-      case 5:  scalar = Format("max(%s, %s)", sa.c_str(), sb.c_str()); break;
-      case 6:  scalar = Format("min(%s, %s)", sa.c_str(), sb.c_str()); break;
-      case 7:  scalar = Format("(%s == 0.0 ? 1.0 : 0.0)", s1.c_str()); break;
-      case 8:  scalar = Format("(%s > 0.0 ? 1.0 : 0.0)", s1.c_str()); break;
-      case 9:  scalar = Format("(%s >= 0.0 ? 1.0 : 0.0)", s1.c_str()); break;
-      case 10: scalar = Format("(%s != 0.0 ? 1.0 : 0.0)", s1.c_str()); break;
-      case 11: scalar = Format("fract(%s)", s1.c_str()); break;
-      case 12: scalar = Format("trunc(%s)", s1.c_str()); break;
-      case 13: scalar = Format("floor(%s)", s1.c_str()); break;
-      case 14: scalar = Format("exp2(%s)", s1.c_str()); break;
-      case 15:
-      case 16: scalar = Format("(%s > 0.0 ? log2(%s) : -3.402823466e38)", s1.c_str(), s1.c_str()); break;
-      case 17: scalar = Format("(%s == 0.0 ? 3.402823466e38 : 1.0 / %s)", s1.c_str(), s1.c_str()); break;
-      case 18: scalar = Format("(%s == 0.0 ? 0.0 : 1.0 / %s)", s1.c_str(), s1.c_str()); break;
-      case 19: scalar = Format("(1.0 / %s)", s1.c_str()); break;
-      case 20: scalar = Format("(%s <= 0.0 ? 3.402823466e38 : inversesqrt(%s))", s1.c_str(), s1.c_str()); break;
-      case 21: scalar = Format("(%s <= 0.0 ? 0.0 : inversesqrt(%s))", s1.c_str(), s1.c_str()); break;
-      case 22: scalar = Format("inversesqrt(%s)", s1.c_str()); break;
-      case 23:
-        scalar = Format("max(%s, %s)", sa.c_str(), sb.c_str());
-        Line(Format("a0 = clamp(int(floor(%s + 0.5)), -256, 255);", sa.c_str()));
-        break;
-      case 24:
-        scalar = Format("max(%s, %s)", sa.c_str(), sb.c_str());
-        Line(Format("a0 = clamp(int(floor(%s)), -256, 255);", sa.c_str()));
-        break;
-      case 25: scalar = Format("(%s - %s)", sa.c_str(), sb.c_str()); break;
-      case 26: scalar = Format("(%s - ps)", s1.c_str()); break;
-      case 27: Line(Format("p0 = (%s == 0.0);", s1.c_str())); scalar = "(p0 ? 0.0 : 1.0)"; break;
-      case 28: Line(Format("p0 = (%s != 0.0);", s1.c_str())); scalar = "(p0 ? 0.0 : 1.0)"; break;
-      case 29: Line(Format("p0 = (%s > 0.0);", s1.c_str())); scalar = "(p0 ? 0.0 : 1.0)"; break;
-      case 30: Line(Format("p0 = (%s >= 0.0);", s1.c_str())); scalar = "(p0 ? 0.0 : 1.0)"; break;
-      case 31:
-        Line(Format("p0 = (%s == 1.0);", s1.c_str()));
-        scalar = Format("(p0 ? 0.0 : blend1(%s == 0.0, 1.0, %s))", s1.c_str(), s1.c_str());
-        break;
-      case 32:
-        Line(Format("p0 = (%s - 1.0 <= 0.0);", s1.c_str()));
-        scalar = Format("(p0 ? 0.0 : %s - 1.0)", s1.c_str());
-        break;
-      case 33: Line("p0 = false;"); scalar = "3.402823466e38"; break;
-      case 34: Line(Format("p0 = (%s == 0.0);", s1.c_str())); scalar = s1; break;
-      case 35: scalar = Format("(%s == 0.0 ? 1.0 : 0.0)", s1.c_str()); scalarKill = true; break;
-      case 36: scalar = Format("(%s > 0.0 ? 1.0 : 0.0)", s1.c_str()); scalarKill = true; break;
-      case 37: scalar = Format("(%s >= 0.0 ? 1.0 : 0.0)", s1.c_str()); scalarKill = true; break;
-      case 38: scalar = Format("(%s != 0.0 ? 1.0 : 0.0)", s1.c_str()); scalarKill = true; break;
-      case 39: scalar = Format("(%s == 1.0 ? 1.0 : 0.0)", s1.c_str()); scalarKill = true; break;
-      case 40: scalar = Format("sqrt(%s)", s1.c_str()); break;
-      case 42:
-      case 43:
-      case 44:
-      case 45:
-      case 46:
-      case 47: {
-        const uint32_t temporary =
-            (scalarOpcode & 1u) | (static_cast<uint32_t>(temp3) << 1) | (swizzle3 & 0x3Cu);
-        std::string constant = Constant(reg3, rel3);
-        constant += ".";
-        constant += kComponents[(3u + ((swizzle3 >> 6) & 3u)) & 3u];
-        std::string other = Format("r[%u].", temporary & 0x1Fu);
-        other += kComponents[swizzle3 & 3u];
-        if (absoluteConstants) {
-          constant = "abs(" + constant + ")";
-          other = "abs(" + other + ")";
-        }
-        if (negate3) {
-          constant = "(-" + constant + ")";
-          other = "(-" + other + ")";
-        }
-        const char* op = scalarOpcode < 44 ? "*" : scalarOpcode < 46 ? "+" : "-";
-        if (scalarOpcode < 44) {
-          scalar = Format("mulL1(%s, %s)", constant.c_str(), other.c_str());
-        } else {
+    if (needScalar) {
+      switch (scalarOpcode) {
+        case 0:  scalar = Format("(%s + %s)", sa.c_str(), sb.c_str()); break;
+        case 1:  usesPs = true; scalar = Format("(%s + ps)", s1.c_str()); break;
+        case 2:  scalar = Format("(%s * %s)", sa.c_str(), sb.c_str()); break;
+        case 3:  usesPs = true; scalar = Format("(%s * ps)", s1.c_str()); break;
+        case 4:
+          usesPs = true;
+          usesHuge = true;
+          scalar = Format("((ps == -kHuge || isnan(ps) || isnan(%s) || %s <= 0.0) ? -kHuge : %s * ps)",
+                          sb.c_str(), sb.c_str(), sa.c_str());
+          break;
+        case 5:  scalar = Format("max(%s, %s)", sa.c_str(), sb.c_str()); break;
+        case 6:  scalar = Format("min(%s, %s)", sa.c_str(), sb.c_str()); break;
+        case 7:  scalar = Format("(%s == 0.0 ? 1.0 : 0.0)", s1.c_str()); break;
+        case 8:  scalar = Format("(%s > 0.0 ? 1.0 : 0.0)", s1.c_str()); break;
+        case 9:  scalar = Format("(%s >= 0.0 ? 1.0 : 0.0)", s1.c_str()); break;
+        case 10: scalar = Format("(%s != 0.0 ? 1.0 : 0.0)", s1.c_str()); break;
+        case 11: scalar = Format("fract(%s)", s1.c_str()); break;
+        case 12: scalar = Format("trunc(%s)", s1.c_str()); break;
+        case 13: scalar = Format("floor(%s)", s1.c_str()); break;
+        case 14: usesSafeExp2 = true; scalar = Format("safeExp2(%s)", s1.c_str()); break;
+        case 15:
+        case 16: usesHuge = true; scalar = Format("(%s > 0.0 ? log2(%s) : -kHuge)", s1.c_str(), s1.c_str()); break;
+        case 17: usesHuge = true; usesSafeRcp = true; scalar = Format("(%s == 0.0 ? kHuge : safeRcp(%s))", s1.c_str(), s1.c_str()); break;
+        case 18: usesSafeRcp = true; scalar = Format("(%s == 0.0 ? 0.0 : safeRcp(%s))", s1.c_str(), s1.c_str()); break;
+        case 19: usesSafeRcp = true; scalar = Format("safeRcp(%s)", s1.c_str()); break;
+        case 20: usesHuge = true; usesSafeRsq = true; scalar = Format("(%s <= 0.0 ? kHuge : safeRsq(%s))", s1.c_str(), s1.c_str()); break;
+        case 21: usesSafeRsq = true; scalar = Format("(%s <= 0.0 ? 0.0 : safeRsq(%s))", s1.c_str(), s1.c_str()); break;
+        case 22: usesSafeRsq = true; scalar = Format("safeRsq(%s)", s1.c_str()); break;
+        case 23:
+          usesA0 = true;
+          scalar = Format("max(%s, %s)", sa.c_str(), sb.c_str());
+          Line(Format("a0 = clamp(int(floor(%s + 0.5)), -256, 255);", sa.c_str()));
+          break;
+        case 24:
+          usesA0 = true;
+          scalar = Format("max(%s, %s)", sa.c_str(), sb.c_str());
+          Line(Format("a0 = clamp(int(floor(%s)), -256, 255);", sa.c_str()));
+          break;
+        case 25: scalar = Format("(%s - %s)", sa.c_str(), sb.c_str()); break;
+        case 26: usesPs = true; scalar = Format("(%s - ps)", s1.c_str()); break;
+        case 27: usesP0 = true; Line(Format("p0 = (%s == 0.0);", s1.c_str())); scalar = "(p0 ? 0.0 : 1.0)"; break;
+        case 28: usesP0 = true; Line(Format("p0 = (%s != 0.0);", s1.c_str())); scalar = "(p0 ? 0.0 : 1.0)"; break;
+        case 29: usesP0 = true; Line(Format("p0 = (%s > 0.0);", s1.c_str())); scalar = "(p0 ? 0.0 : 1.0)"; break;
+        case 30: usesP0 = true; Line(Format("p0 = (%s >= 0.0);", s1.c_str())); scalar = "(p0 ? 0.0 : 1.0)"; break;
+        case 31:
+          usesP0 = true;
+          usesBlend1 = true;
+          Line(Format("p0 = (%s == 1.0);", s1.c_str()));
+          scalar = Format("(p0 ? 0.0 : blend1(%s == 0.0, 1.0, %s))", s1.c_str(), s1.c_str());
+          break;
+        case 32:
+          usesP0 = true;
+          Line(Format("p0 = (%s - 1.0 <= 0.0);", s1.c_str()));
+          scalar = Format("(p0 ? 0.0 : %s - 1.0)", s1.c_str());
+          break;
+        case 33: usesP0 = true; usesHuge = true; Line("p0 = false;"); scalar = "kHuge"; break;
+        case 34: usesP0 = true; Line(Format("p0 = (%s == 0.0);", s1.c_str())); scalar = s1; break;
+        case 35: scalar = Format("(%s == 0.0 ? 1.0 : 0.0)", s1.c_str()); scalarKill = true; break;
+        case 36: scalar = Format("(%s > 0.0 ? 1.0 : 0.0)", s1.c_str()); scalarKill = true; break;
+        case 37: scalar = Format("(%s >= 0.0 ? 1.0 : 0.0)", s1.c_str()); scalarKill = true; break;
+        case 38: scalar = Format("(%s != 0.0 ? 1.0 : 0.0)", s1.c_str()); scalarKill = true; break;
+        case 39: scalar = Format("(%s == 1.0 ? 1.0 : 0.0)", s1.c_str()); scalarKill = true; break;
+        case 40: scalar = Format("sqrt(%s)", s1.c_str()); break;
+        case 42:
+        case 43:
+        case 44:
+        case 45:
+        case 46:
+        case 47: {
+          const uint32_t temporary =
+              (scalarOpcode & 1u) | (static_cast<uint32_t>(temp3) << 1) | (swizzle3 & 0x3Cu);
+          std::string constant = Constant(reg3, rel3);
+          constant += ".";
+          constant += kComponents[(3u + ((swizzle3 >> 6) & 3u)) & 3u];
+          MarkTempRead(temporary & 0x1Fu, static_cast<uint8_t>(1u << (swizzle3 & 3u)));
+          std::string other = Format("r[%u].", temporary & 0x1Fu);
+          other += kComponents[swizzle3 & 3u];
+          if (absoluteConstants) {
+            constant = "abs(" + constant + ")";
+            other = "abs(" + other + ")";
+          }
+          if (negate3) {
+            constant = "(-" + constant + ")";
+            other = "(-" + other + ")";
+          }
+          const char* op = scalarOpcode < 44 ? "*" : scalarOpcode < 46 ? "+" : "-";
           scalar = Format("(%s %s %s)", constant.c_str(), op, other.c_str());
+          break;
         }
-        break;
+        case 48: scalar = Format("sin(%s)", s1.c_str()); break;
+        case 49: scalar = Format("cos(%s)", s1.c_str()); break;
+        case 50: usesPs = true; scalar = "ps"; break;
+        default:
+          out.problem = Format("scalar opcode %u", scalarOpcode);
+          scalar = "0.0";
+          break;
       }
-      case 48: scalar = Format("sin(%s)", s1.c_str()); break;
-      case 49: scalar = Format("cos(%s)", s1.c_str()); break;
-      case 50: scalar = "ps"; break;
-      default:
-        out.problem = Format("scalar opcode %u", scalarOpcode);
-        scalar = "0.0";
-        break;
-    }
 
-    if (scalarKill && pixel) {
-      out.usesKill = true;
-      Line(Format("if (%s != 0.0) discard;", scalar.c_str()));
+      if (scalarKill && pixel) {
+        out.usesKill = true;
+        Line(Format("if (%s != 0.0) discard;", scalar.c_str()));
+      }
+      if (scalarClamp) scalar = "clamp(" + scalar + ", 0.0, 1.0)";
+      if ((scalarMask != 0u || psNeededAfter) && (scalarOpcode != 50u || scalarClamp)) {
+        usesPs = true;
+        Line(Format("ps = %s;", scalar.c_str()));
+      }
     }
-    if (scalarClamp) scalar = "clamp(" + scalar + ", 0.0, 1.0)";
-    Line(Format("ps = %s;", scalar.c_str()));
 
     if (vectorMask != 0) {
       const std::string m = Mask(vectorMask);
       Line(Format("%s.%s = vectorValue.%s;", vectorDestination.c_str(), m.c_str(), m.c_str()));
+      if (pixel && !exported) {
+        const uint32_t d = vectorDest & 0x1Fu;
+        if (curAluInterpReads) interpFeeders[d] |= curAluInterpReads;
+        if (controlDepth == 0 && !isPredicated) uncondWritten[d] |= static_cast<uint8_t>(vectorMask);
+      }
     }
     if (scalarMask != 0) {
-      const std::string destination = Destination(exported ? vectorDest : scalarDest, exported);
+      usesPs = true;
+      const uint32_t sDestReg = exported ? vectorDest : scalarDest;
+      const std::string destination = Destination(sDestReg, exported);
       const std::string m = Mask(scalarMask);
       Line(Format("%s.%s = %s;", destination.c_str(), m.c_str(),
                   BroadcastScalar("ps", m.size()).c_str()));
+      if (pixel && !exported) {
+        const uint32_t d = sDestReg & 0x1Fu;
+        if (curAluInterpReads) interpFeeders[d] |= curAluInterpReads;
+        if (controlDepth == 0 && !isPredicated) uncondWritten[d] |= static_cast<uint8_t>(scalarMask);
+      }
     }
 
     if (isPredicated) {
       --indent;
       Line("}");
     }
-    --indent;
-    Line("}");
+    if (needScope) {
+      --indent;
+      Line("}");
+    }
   }
 
-  void FetchWrite(uint32_t destReg, uint32_t swizzle, const std::string& fetched) {
+  void FetchWrite(uint32_t destReg, uint32_t swizzle, const std::string& fetched,
+                  bool isPredicated = false) {
+    uint8_t written = 0;
     for (uint32_t i = 0; i < 4; ++i) {
       const uint32_t selector = (swizzle >> (i * 3)) & 7u;
       std::string value;
@@ -430,7 +562,11 @@ struct Translator {
       } else {
         continue;
       }
+      written |= static_cast<uint8_t>(1u << i);
       Line(Format("r[%u].%c = %s;", destReg & 0x1Fu, kComponents[i], value.c_str()));
+    }
+    if (pixel && controlDepth == 0 && !isPredicated) {
+      uncondWritten[destReg & 0x1Fu] |= written;
     }
   }
 
@@ -462,6 +598,7 @@ struct Translator {
     Line("{");
     ++indent;
     if (isPredicated) {
+      usesP0 = true;
       Line(Format("if (p0 == %s) {", predicateCondition ? "true" : "false"));
       ++indent;
     }
@@ -610,8 +747,9 @@ struct Translator {
         break;
     }
 
+    usesFetched = true;
     Line(Format("fetched = %s%s;", decoded.c_str(), scale.c_str()));
-    FetchWrite(dstReg, dstSwizzle, "fetched");
+    FetchWrite(dstReg, dstSwizzle, "fetched", isPredicated);
 
     if (isPredicated) {
       --indent;
@@ -643,15 +781,30 @@ struct Translator {
     const bool predicateCondition = ((d2 >> 31) & 1u) != 0;
 
     if (opcode != 1) {
+      const uint32_t srcR = srcReg & 0x1Fu;
+      const bool useDirectInput =
+          pixel && controlDepth == 0 && srcR < 16u && uncondWritten[srcR] == 0u;
       const std::string coordinate =
-          Format("r[%u].%c%c", srcReg & 0x1Fu, kComponents[srcSwizzle & 3u],
-                 kComponents[(srcSwizzle >> 2) & 3u]);
+          useDirectInput
+              ? Format("p_v%u.%c%c", srcR, kComponents[srcSwizzle & 3u],
+                       kComponents[(srcSwizzle >> 2) & 3u])
+              : Format("r[%u].%c%c", srcR, kComponents[srcSwizzle & 3u],
+                       kComponents[(srcSwizzle >> 2) & 3u]);
       if (opcode == 24) {
-        Line(Format("textureLodVal = r[%u].x;", srcReg & 0x1Fu));
+        usesTexLod = true;
+        MarkTempRead(srcR, 1u);
+        Line(Format("textureLodVal = r[%u].x;", srcR));
       } else if (opcode == 17) {
+        usesFetched = true;
         Line("fetched = vec4(0.0);");
       } else if (opcode == 18) {
+        usesFetched = true;
         if (pixel) {
+          if (useDirectInput) directPvMask |= (1u << srcR);
+          else texCoordGprMask |= (1u << srcR);
+          MarkTempRead(srcR,
+                       static_cast<uint8_t>((1u << (srcSwizzle & 3u)) |
+                                            (1u << ((srcSwizzle >> 2) & 3u))));
           Line(Format("fetched = vec4(dFdx(%s.x), dFdy(%s.x), dFdx(%s.y), dFdy(%s.y));",
                       coordinate.c_str(), coordinate.c_str(), coordinate.c_str(),
                       coordinate.c_str()));
@@ -659,13 +812,19 @@ struct Translator {
           Line("fetched = vec4(0.0);");
         }
       } else if (opcode == 19) {
+        usesFetched = true;
+        if (useDirectInput) directPvMask |= (1u << srcR);
+        else texCoordGprMask |= (1u << srcR);
+        MarkTempRead(srcR,
+                     static_cast<uint8_t>((1u << (srcSwizzle & 3u)) |
+                                          (1u << ((srcSwizzle >> 2) & 3u))));
         Line(Format("fetched = vec4(fract(%s * texSize[%u].xy - 0.5), 0.0, 0.0);",
                     coordinate.c_str(), slot));
       } else if (opcode != 25 && opcode != 26) {
         out.problem = Format("fetch opcode %u", opcode);
         return;
       }
-      if (opcode == 17 || opcode == 18 || opcode == 19) FetchWrite(dstReg, dstSwizzle, "fetched");
+      if (opcode == 17 || opcode == 18 || opcode == 19) FetchWrite(dstReg, dstSwizzle, "fetched", false);
       return;
     }
 
@@ -687,25 +846,45 @@ struct Translator {
       out.textureFetches.push_back(fetch);
     }
 
+    const uint32_t srcR = srcReg & 0x1Fu;
+    const bool useDirectInput =
+        pixel && controlDepth == 0 && srcR < 16u && uncondWritten[srcR] == 0u;
+    if (useDirectInput) {
+      directPvMask |= (1u << srcR);
+    } else {
+      texCoordGprMask |= (1u << srcR);
+    }
+    uint8_t tcMask = static_cast<uint8_t>((1u << (srcSwizzle & 3u)) |
+                                          (1u << ((srcSwizzle >> 2) & 3u)));
+    if (dimension == 3u) tcMask |= static_cast<uint8_t>(1u << ((srcSwizzle >> 4) & 3u));
+    MarkTempRead(srcR, tcMask);
+
     Line("{");
     ++indent;
     if (isPredicated) {
+      usesP0 = true;
       Line(Format("if (p0 == %s) {", predicateCondition ? "true" : "false"));
       ++indent;
     }
 
     const std::string coordinate =
-        Format("r[%u].%c%c%c", srcReg & 0x1Fu, kComponents[srcSwizzle & 3u],
-               kComponents[(srcSwizzle >> 2) & 3u], kComponents[(srcSwizzle >> 4) & 3u]);
+        useDirectInput
+            ? Format("p_v%u.%c%c%c", srcR, kComponents[srcSwizzle & 3u],
+                     kComponents[(srcSwizzle >> 2) & 3u], kComponents[(srcSwizzle >> 4) & 3u])
+            : Format("r[%u].%c%c%c", srcR, kComponents[srcSwizzle & 3u],
+                     kComponents[(srcSwizzle >> 2) & 3u], kComponents[(srcSwizzle >> 4) & 3u]);
     const std::string texture = Format("%st%u", pixel ? "p" : "v", binding);
     const std::string size = Format("texSize[%u]", slot);
 
     std::string location;
     if (dimension == 3) {
+      usesCubeDir = true;
       location = Format("cubeDirection(%s)", coordinate.c_str());
     } else {
-      location = unnormalised ? Format("((%s).xy * %s.zw)", coordinate.c_str(), size.c_str())
-                              : Format("(%s).xy", coordinate.c_str());
+      const char* uvSwiz = (slot & 1u) ? "zw" : "xy";
+      location = unnormalised
+                     ? Format("((%s).xy * %s.zw)", coordinate.c_str(), size.c_str())
+                     : Format("((%s).xy * texUvScale[%u].%s)", coordinate.c_str(), slot >> 1u, uvSwiz);
     }
     if (dimension != 3 && (offsetX != 0 || offsetY != 0)) {
       location = Format("(%s + vec2(%.4f, %.4f) * %s.zw)", location.c_str(), offsetX * 0.5,
@@ -714,6 +893,7 @@ struct Translator {
 
     std::string sample;
     if (useRegisterLod || !pixel) {
+      if (useRegisterLod) usesTexLod = true;
       sample = Format("textureLod(%s, %s, %s)", texture.c_str(), location.c_str(),
                       useRegisterLod ? "textureLodVal" : "0.0");
     } else if (lodBias != 0) {
@@ -722,8 +902,9 @@ struct Translator {
       sample = Format("texture(%s, %s)", texture.c_str(), location.c_str());
     }
 
+    usesFetched = true;
     Line(Format("fetched = textureAdjust(%uu, %s);", slot, sample.c_str()));
-    FetchWrite(dstReg, dstSwizzle, "fetched");
+    FetchWrite(dstReg, dstSwizzle, "fetched", isPredicated);
 
     if (isPredicated) {
       --indent;
@@ -754,7 +935,23 @@ struct Translator {
           TextureFetchInstruction(d0, d1, d2);
         }
       } else {
-        Alu(d0, d1, d2);
+        bool psNeededAfter = true;
+        if (i + 1 < count && (((sequence >> ((i + 1) * 2)) & 1u) == 0)) {
+          const uint32_t nextSlot = address + i + 1;
+          if (nextSlot * 3 + 2 < words.size()) {
+            const uint32_t nd0 = words[nextSlot * 3 + 0];
+            const uint32_t nd1 = words[nextSlot * 3 + 1];
+            const bool nextPred = ((nd1 >> 28) & 1u) != 0;
+            const uint32_t nextScalarOp = (nd0 >> 26) & 0x3Fu;
+            const bool nextReadsPs =
+                nextScalarOp == 1u || nextScalarOp == 3u || nextScalarOp == 4u ||
+                nextScalarOp == 26u || nextScalarOp == 50u;
+            if (!nextPred && !nextReadsPs) {
+              psNeededAfter = false;
+            }
+          }
+        }
+        Alu(d0, d1, d2, psNeededAfter);
       }
     }
   }
@@ -798,7 +995,9 @@ struct Translator {
           const bool condition = ((instruction >> 42) & 1u) != 0;
           Line(Format("if (%s == %uu) {", BoolConstant(boolAddress).c_str(), condition ? 1u : 0u));
           ++indent;
+          ++controlDepth;
           ExecBody(instruction);
+          --controlDepth;
           --indent;
           Line("}");
           if (opcode == 4 && inLoop) Line(finish);
@@ -809,10 +1008,13 @@ struct Translator {
         case 6:
         case 13:
         case 14: {
+          usesP0 = true;
           const bool condition = ((instruction >> 42) & 1u) != 0;
           Line(Format("if (p0 == %s) {", condition ? "true" : "false"));
           ++indent;
+          ++controlDepth;
           ExecBody(instruction);
+          --controlDepth;
           --indent;
           Line("}");
           if ((opcode == 6 || opcode == 14) && inLoop) Line(finish);
@@ -832,22 +1034,27 @@ struct Translator {
           const bool condition = ((instruction >> 42) & 1u) != 0;
           const uint32_t boolAddress = static_cast<uint32_t>(instruction >> 34) & 0xFFu;
           if (onPredicate) {
+            usesP0 = true;
             Line(Format("if (p0 == %s) {", condition ? "false" : "true"));
           } else {
             Line(Format("if (%s == %uu) {", BoolConstant(boolAddress).c_str(), condition ? 0u : 1u));
           }
           ++indent;
+          ++controlDepth;
           uint32_t elseTarget = 0;
           bool elseUnconditional = false;
           const uint32_t last = target - 1;
           const bool ifElse = last > i && jumpOf(last, elseTarget, elseUnconditional) &&
                               elseUnconditional && elseTarget > target && elseTarget <= end;
           if (!EmitStructured(flow, i + 1, ifElse ? last : target, inLoop)) return false;
+          --controlDepth;
           --indent;
           if (ifElse) {
             Line("} else {");
             ++indent;
+            ++controlDepth;
             if (!EmitStructured(flow, target, elseTarget, inLoop)) return false;
+            --controlDepth;
             --indent;
           }
           Line("}");
@@ -868,7 +1075,9 @@ struct Translator {
             const uint32_t inside = static_cast<uint32_t>(flow[j] >> 44) & 0xFu;
             if (inside == 2 || inside == 4 || inside == 6 || inside == 14) return false;
           }
+          usesAL = true;
           const bool predicated = ((last >> 13) & 1u) != 0;
+          if (predicated) usesP0 = true;
           const bool condition = ((last >> 42) & 1u) != 0;
           Line(Format("{ uint loopConstant%u = loops[%u][%u]; uint loopCount%u = loopConstant%u & 0xFFu;",
                       i, loopId / 4u, loopId & 3u, i, i));
@@ -879,11 +1088,13 @@ struct Translator {
           Line(Format("  for (uint loopIndex%u = 0u; loopIndex%u < 1024u; loopIndex%u++) {",
                       i, i, i));
           indent += 2;
+          ++controlDepth;
           if (!EmitStructured(flow, i + 1, loopEnd, inLoop)) return false;
           Line(Format("aL += loopStep%u; if (loopIndex%u >= loopCount%u) break;", i, i, i));
           if (predicated) {
             Line(Format("if (p0 == %s) break;", condition ? "false" : "true"));
           }
+          --controlDepth;
           indent -= 2;
           Line("  } }");
           Line(Format("  aL = savedAL%u; }", i));
@@ -894,6 +1105,178 @@ struct Translator {
           return false;
       }
     }
+    return true;
+  }
+
+  static bool CanEmitForwardLinear(const std::vector<uint64_t>& flow) {
+    const uint32_t n = static_cast<uint32_t>(flow.size());
+    struct LoopSpan {
+      uint32_t start;
+      uint32_t end;
+    };
+    std::vector<LoopSpan> loops;
+    std::vector<bool> matchedLoopEnd(n, false);
+    for (uint32_t i = 0; i < n; ++i) {
+      const uint64_t ins = flow[i];
+      const uint32_t op = static_cast<uint32_t>(ins >> 44) & 0xFu;
+      if (op == 9u || op == 10u) return false;
+      if (op == 11u) {
+        const uint32_t target = static_cast<uint32_t>(ins) & 0x1FFFu;
+        if (target <= i) return false;
+      } else if (op == 7u) {
+        const uint32_t loopEnd = static_cast<uint32_t>(ins) & 0x1FFFu;
+        if (loopEnd <= i || loopEnd >= n) return false;
+        const uint64_t endIns = flow[loopEnd];
+        if (((static_cast<uint32_t>(endIns >> 44) & 0xFu) != 8u) ||
+            ((static_cast<uint32_t>(endIns) & 0x1FFFu) != i)) {
+          return false;
+        }
+        if (matchedLoopEnd[loopEnd]) return false;
+        matchedLoopEnd[loopEnd] = true;
+        loops.push_back({i, loopEnd});
+      } else if (op == 8u) {
+        if (!matchedLoopEnd[i]) return false;
+      }
+    }
+    for (const auto& L : loops) {
+      for (const auto& L2 : loops) {
+        if (L2.start > L.start && L2.start < L.end && L2.end >= L.end) return false;
+      }
+      for (uint32_t i = 0; i < n; ++i) {
+        if (i >= L.start && i <= L.end) continue;
+        const uint64_t ins = flow[i];
+        const uint32_t op = static_cast<uint32_t>(ins >> 44) & 0xFu;
+        if (op == 11u) {
+          const uint32_t target = static_cast<uint32_t>(ins) & 0x1FFFu;
+          if (target > L.start && target <= L.end) return false;
+        }
+      }
+    }
+    return true;
+  }
+
+  bool EmitForwardLinearRange(const std::vector<uint64_t>& flow, uint32_t begin, uint32_t end,
+                              uint32_t endCase) {
+    usesPC = true;
+    ++controlDepth;
+    uint32_t i = begin;
+    while (i < end) {
+      const uint64_t instruction = flow[i];
+      const uint32_t opcode = static_cast<uint32_t>(instruction >> 44) & 0xFu;
+      if (opcode == 0u || opcode == 12u || opcode == 15u) {
+        ++i;
+        continue;
+      }
+      if (opcode == 7u) {
+        usesAL = true;
+        const uint32_t loopEnd = static_cast<uint32_t>(instruction) & 0x1FFFu;
+        const bool repeat = ((instruction >> 13) & 1u) != 0;
+        const uint32_t loopId = static_cast<uint32_t>(instruction >> 16) & 0x1Fu;
+        const uint64_t last = flow[loopEnd];
+        const bool predicated = ((last >> 13) & 1u) != 0;
+        if (predicated) usesP0 = true;
+        const bool condition = ((last >> 42) & 1u) != 0;
+        Line(Format("if (programCounter <= %d) {", static_cast<int>(i)));
+        ++indent;
+        Line(Format("uint loopConstant%u = loops[%u][%u]; uint loopCount%u = loopConstant%u & 0xFFu;",
+                    i, loopId / 4u, loopId & 3u, i, i));
+        Line(Format("int loopStep%u = int((loopConstant%u >> 16u) & 0xFFu); if (loopStep%u >= 128) loopStep%u -= 256;",
+                    i, i, i, i));
+        Line(Format("int savedAL%u = aL; aL = int((loopConstant%u >> 8u) & 0xFFu);", i, i));
+        Line(Format("if (loopCount%u != 0u || %s) {", i, repeat ? "true" : "false"));
+        ++indent;
+        Line(Format("for (uint loopIndex%u = 0u; loopIndex%u < 1024u; loopIndex%u++) {", i, i, i));
+        ++indent;
+        Line(Format("programCounter = %d;", static_cast<int>(i + 1)));
+        if (!EmitForwardLinearRange(flow, i + 1, loopEnd, endCase)) {
+          --controlDepth;
+          return false;
+        }
+        Line(Format("if (programCounter > %d) break;", static_cast<int>(loopEnd)));
+        if (predicated) {
+          Line(Format("if (p0 == %s) break;", condition ? "false" : "true"));
+        }
+        Line(Format("if (loopIndex%u >= loopCount%u) break;", i, i));
+        Line(Format("aL += loopStep%u;", i));
+        --indent;
+        Line("}");
+        --indent;
+        Line("}");
+        Line(Format("aL = savedAL%u;", i));
+        Line(Format("if (programCounter <= %d) programCounter = %d;",
+                    static_cast<int>(loopEnd), static_cast<int>(loopEnd + 1)));
+        --indent;
+        Line("}");
+        i = loopEnd + 1;
+        continue;
+      }
+
+      Line(Format("if (programCounter <= %d) {", static_cast<int>(i)));
+      ++indent;
+      switch (opcode) {
+        case 1:
+          ExecBody(instruction);
+          break;
+        case 2:
+          ExecBody(instruction);
+          Line(Format("programCounter = %d;", static_cast<int>(endCase)));
+          break;
+        case 3:
+        case 4: {
+          const uint32_t boolAddress = static_cast<uint32_t>(instruction >> 34) & 0xFFu;
+          const bool condition = ((instruction >> 42) & 1u) != 0;
+          Line(Format("if (%s == %uu) {", BoolConstant(boolAddress).c_str(), condition ? 1u : 0u));
+          ++indent;
+          ExecBody(instruction);
+          --indent;
+          Line("}");
+          if (opcode == 4) Line(Format("programCounter = %d;", static_cast<int>(endCase)));
+          break;
+        }
+        case 5:
+        case 6:
+        case 13:
+        case 14: {
+          usesP0 = true;
+          const bool condition = ((instruction >> 42) & 1u) != 0;
+          Line(Format("if (p0 == %s) {", condition ? "true" : "false"));
+          ++indent;
+          ExecBody(instruction);
+          --indent;
+          Line("}");
+          if (opcode == 6 || opcode == 14) {
+            Line(Format("programCounter = %d;", static_cast<int>(endCase)));
+          }
+          break;
+        }
+        case 11: {
+          const uint32_t target = static_cast<uint32_t>(instruction) & 0x1FFFu;
+          const bool unconditional = ((instruction >> 13) & 1u) != 0;
+          const bool onPredicate = ((instruction >> 14) & 1u) != 0;
+          const bool condition = ((instruction >> 42) & 1u) != 0;
+          const uint32_t boolAddress = static_cast<uint32_t>(instruction >> 34) & 0xFFu;
+          if (unconditional) {
+            Line(Format("programCounter = %d;", static_cast<int>(target)));
+          } else if (onPredicate) {
+            usesP0 = true;
+            Line(Format("if (p0 == %s) programCounter = %d;",
+                        condition ? "true" : "false", static_cast<int>(target)));
+          } else {
+            Line(Format("if (%s == %uu) programCounter = %d;",
+                        BoolConstant(boolAddress).c_str(), condition ? 1u : 0u,
+                        static_cast<int>(target)));
+          }
+          break;
+        }
+        default:
+          --controlDepth;
+          return false;
+      }
+      --indent;
+      Line("}");
+      ++i;
+    }
+    --controlDepth;
     return true;
   }
 
@@ -922,6 +1305,21 @@ struct Translator {
       }
     }
 
+    uint32_t maxReachable = 0;
+    for (uint32_t i = 0; i < static_cast<uint32_t>(flow.size()); ++i) {
+      const uint64_t f = flow[i];
+      const uint32_t op = static_cast<uint32_t>(f >> 44) & 0xFu;
+      if (op == 7u || op == 11u) {
+        const uint32_t t = static_cast<uint32_t>(f) & 0x1FFFu;
+        if (t > maxReachable) maxReachable = t;
+      }
+      if (op == 2u && i >= maxReachable) {
+        flow.resize(i + 1);
+        break;
+      }
+    }
+
+    const uint32_t endCase = static_cast<uint32_t>(flow.size());
     {
       const std::string savedBody = std::move(body);
       const int savedIndent = indent;
@@ -937,40 +1335,77 @@ struct Translator {
       const bool savedKill = out.usesKill;
       const std::string savedProblem = out.problem;
 
+      auto restoreState = [&]() {
+        body = savedBody;
+        indent = savedIndent;
+        vertexSlotOrder = savedVOrder;
+        vertexSlotToBinding = savedVMap;
+        vertexStrides = savedStrides;
+        exportsUsed = savedExports;
+        constantsRead = savedConstants;
+        relativeConstants = savedRel;
+        lastFullVertexSlot = 0;
+        std::memset(uncondWritten, 0, sizeof(uncondWritten));
+        liveInputMask = 0;
+        directPvMask = 0;
+        texCoordGprMask = 0;
+        std::memset(interpFeeders, 0, sizeof(interpFeeders));
+        curAluInterpReads = 0;
+        controlDepth = 0;
+        usesA0 = false;
+        usesP0 = false;
+        usesAL = false;
+        usesPC = false;
+        usesLoopStack = false;
+        usesTexLod = false;
+        usesFetched = false;
+        usesPs = false;
+        usesCubeMap = false;
+        usesCubeDir = false;
+        usesMax4 = false;
+        usesBlend1 = false;
+        usesSafeExp2 = false;
+        usesSafeRcp = false;
+        usesSafeRsq = false;
+        usesHuge = false;
+        out.vertexFetches = savedVtxFetches;
+        out.textureFetches = savedTexFetches;
+        out.writesDepth = savedDepth;
+        out.usesKill = savedKill;
+        out.problem = savedProblem;
+      };
+
       body.clear();
       lastFullVertexSlot = 0;
       Line("for (int structuredOnce = 0; structuredOnce < 1; structuredOnce++) {");
       ++indent;
-      if (EmitStructured(flow, 0, static_cast<uint32_t>(flow.size()), true)) {
+      if (EmitStructured(flow, 0, endCase, true)) {
         --indent;
         Line("}");
         return out.problem.empty();
       }
-      out.usedInterpreter = true;  // structured emission failed; using slow interpreter
-      body = std::move(savedBody);
-      indent = savedIndent;
-      vertexSlotOrder = savedVOrder;
-      vertexSlotToBinding = savedVMap;
-      vertexStrides = savedStrides;
-      exportsUsed = savedExports;
-      constantsRead = savedConstants;
-      relativeConstants = savedRel;
-      lastFullVertexSlot = 0;
-      out.vertexFetches = savedVtxFetches;
-      out.textureFetches = savedTexFetches;
-      out.writesDepth = savedDepth;
-      out.usesKill = savedKill;
-      out.problem = savedProblem;
-    }
 
-    const uint32_t endCase = static_cast<uint32_t>(flow.size());
-    Line("for (uint step = 0u; step < 65536u; step++) {");
+      restoreState();
+      body.clear();
+      lastFullVertexSlot = 0;
+      if (CanEmitForwardLinear(flow) && EmitForwardLinearRange(flow, 0, endCase, endCase)) {
+        return out.problem.empty();
+      }
+
+      out.usedInterpreter = true;  // structured and forward-linear emission failed; using fallthrough switch
+      restoreState();
+      usesPC = true;
+      usesAL = true;
+      usesLoopStack = true;
+      usesP0 = true;
+      ++controlDepth;
+    }
+    Line("for (uint step = 0u; step < 512u; step++) {");
     ++indent;
     Line("switch (programCounter) {");
     for (size_t i = 0; i < flow.size(); ++i) {
       const uint64_t instruction = flow[i];
       const uint32_t opcode = static_cast<uint32_t>(instruction >> 44) & 0xFu;
-      const std::string next = Format("programCounter = %d; break;", static_cast<int>(i + 1));
       const std::string finish = Format("programCounter = %d; break;", static_cast<int>(endCase));
       Line(Format("case %d: {", static_cast<int>(i)));
       ++indent;
@@ -978,11 +1413,9 @@ struct Translator {
         case 0:
         case 12:
         case 15:
-          Line(next);
           break;
         case 1:
           ExecBody(instruction);
-          Line(next);
           break;
         case 2:
           ExecBody(instruction);
@@ -997,7 +1430,7 @@ struct Translator {
           ExecBody(instruction);
           --indent;
           Line("}");
-          Line(opcode == 4 ? finish : next);
+          if (opcode == 4) Line(finish);
           break;
         }
         case 5:
@@ -1010,7 +1443,7 @@ struct Translator {
           ExecBody(instruction);
           --indent;
           Line("}");
-          Line((opcode == 6 || opcode == 14) ? finish : next);
+          if (opcode == 6 || opcode == 14) Line(finish);
           break;
         }
         case 7: {
@@ -1023,7 +1456,6 @@ struct Translator {
                       repeat ? "true" : "false", static_cast<int>(loopEnd + 1)));
           Line("if (depth < 4u) { loopCount[depth] = count; loopAddress[depth] = aL; depth++; }");
           Line("aL = int((loopConstant >> 8u) & 0xFFu);");
-          Line(next);
           break;
         }
         case 8: {
@@ -1040,7 +1472,6 @@ struct Translator {
               "if (!exitLoop && depth > 0u && loopCount[depth - 1u] > 0u) { loopCount[depth - 1u]--; aL += stepValue; programCounter = %d; break; }",
               static_cast<int>(loopStart + 1)));
           Line("if (depth > 0u) { depth--; aL = loopAddress[depth]; }");
-          Line(next);
           break;
         }
         case 11: {
@@ -1059,7 +1490,6 @@ struct Translator {
                         BoolConstant(boolAddress).c_str(), condition ? 1u : 0u,
                         static_cast<int>(target)));
           }
-          Line(next);
           break;
         }
         case 9:
@@ -1091,7 +1521,7 @@ void SetVertexTextureBuffers(bool enabled) { g_vertexTextureBuffers = enabled; }
 bool VertexTextureBuffers() { return g_vertexTextureBuffers; }
 
 uint64_t Version() {
-  static const char* const tag = "bs1-xenos-glsl-es320-v7-mali-ring-tbo";
+  static const char* const tag = "bs1-xenos-glsl-es320-v13-uvscale-highpdepth";
   uint64_t hash = 14695981039346656037ULL;
   for (const char* p = tag; *p; ++p) {
     hash ^= static_cast<unsigned char>(*p);
@@ -1110,84 +1540,10 @@ Translation Translate(const std::vector<uint32_t>& words, bool pixel) {
   }
   translator.PackConstants();
 
-  std::string glsl;
-  glsl.reserve(translator.body.size() + 4096);
-  glsl += "#version 320 es\n";
-  glsl += "precision highp float;\n";
-  glsl += "precision highp int;\n";
-  glsl += "// Translated from Xenos microcode by BioShock1 custom GLES 3.2 renderer.\n";
-  const uint32_t floatBinding = pixel ? 1u : 0u;
-  const char* floatBlockName = pixel ? "PsFloatConstants" : "VsFloatConstants";
-  const char* floatArrName = pixel ? "pc" : "vc";
-  glsl += Format("layout(std140, binding = %u) uniform %s { vec4 %s[256]; };\n",
-                 floatBinding, floatBlockName, floatArrName);
-  glsl += "layout(std140, binding = 2) uniform BoolConstants { uvec4 bools[2]; uvec4 loops[8]; };\n";
-  glsl +=
-      "layout(std140, binding = 3) uniform DrawConstants {\n"
-      "    vec4 viewportScale;\n"
-      "    vec4 viewportOffset;\n"
-      "    vec4 targetSize;\n"
-      "    uvec4 flags;\n"
-      "    vec4 texSize[32];\n"
-      "    uvec4 textureAdjustment[32];\n"
-      "    vec4 pixelGen;\n"
-      "    vec4 colorExpBias;\n"
-      "    uvec4 vbSlice[16];\n"
-      "};\n";
-  glsl +=
-      "uint bswap(uint v) { return (v >> 24u) | ((v >> 8u) & 0xFF00u) | ((v << 8u) & 0xFF0000u) | (v << 24u); }\n"
-      "float max4(vec4 v) { return max(max(v.x, v.y), max(v.z, v.w)); }\n"
-      "vec4 blend4(vec4 mask, vec4 whenSet, vec4 whenClear) { return mix(whenClear, whenSet, mask); }\n"
-      "float blend1(bool set, float whenSet, float whenClear) { return set ? whenSet : whenClear; }\n"
-      "vec4 mulL(vec4 a, vec4 b) { return a * b; }\n"
-      "float mulL1(float a, float b) { return a * b; }\n";
-  glsl +=
-      "float flipIf(float v, bool flip) { return uintBitsToFloat(floatBitsToUint(v) ^ (flip ? 0x80000000u : 0u)); }\n"
-      "vec4 cubeMapX(vec3 v) { return vec4(flipIf(v.z, v.x >= 0.0), flipIf(v.y, true), v.x >= 0.0 ? 0.0 : 1.0, 2.0 * abs(v.x)); }\n"
-      "vec4 cubeMapY(vec3 v) { return vec4(v.x, flipIf(v.z, v.y < 0.0), v.y >= 0.0 ? 2.0 : 3.0, 2.0 * abs(v.y)); }\n"
-      "vec4 cubeMapZ(vec3 v) { return vec4(flipIf(v.x, v.z < 0.0), flipIf(v.y, true), v.z >= 0.0 ? 4.0 : 5.0, 2.0 * abs(v.z)); }\n"
-      "vec4 cubeMap(vec4 a, vec4 b) {\n"
-      "    return (abs(a.x) >= abs(a.y) && abs(a.x) >= abs(a.z)) ? cubeMapX(a.xyz) : (abs(a.y) >= abs(a.z)) ? cubeMapY(a.xyz) : cubeMapZ(a.xyz); }\n";
-  glsl +=
-      "vec3 cubeDirection(vec3 c) {\n"
-      "    uint face = uint(c.z);\n"
-      "    vec3 major = face == 0u ? vec3(1.0, 0.0, 0.0) : face == 1u ? vec3(-1.0, 0.0, 0.0) : face == 2u ? vec3(0.0, 1.0, 0.0)\n"
-      "        : face == 3u ? vec3(0.0, -1.0, 0.0) : face == 4u ? vec3(0.0, 0.0, 1.0) : vec3(0.0, 0.0, -1.0);\n"
-      "    vec3 sx = face == 0u ? vec3(0.0, 0.0, -1.0) : face == 1u ? vec3(0.0, 0.0, 1.0) : face == 5u ? vec3(-1.0, 0.0, 0.0) : vec3(1.0, 0.0, 0.0);\n"
-      "    vec3 sy = face == 2u ? vec3(0.0, 0.0, 1.0) : face == 3u ? vec3(0.0, 0.0, -1.0) : vec3(0.0, -1.0, 0.0);\n"
-      "    return major + sx * c.x + sy * c.y; }\n";
-
-  // Separate texture binding ranges for VS (16..23) and PS (0..15) so linked programs never collide.
-  const uint32_t texBaseUnit = pixel ? 0u : 12u;
-  for (TextureFetch& fetch : out.textureFetches) {
-    fetch.binding += texBaseUnit;
-    const char* type = fetch.dimension == 3 ? "samplerCube" : "sampler2D";
-    glsl += Format("layout(binding = %u) uniform highp %s %st%u;\n",
-                   fetch.binding, type, pixel ? "p" : "v", fetch.binding - texBaseUnit);
-  }
-
-  glsl +=
-      "float pickComponent(vec4 v, uint s) { return s == 0u ? v.x : s == 1u ? v.y : s == 2u ? v.z : s == 3u ? v.w : s == 4u ? 0.0 : 1.0; }\n"
-      "float adjustComponent(vec4 v, uint s, uint mode) {\n"
-      "    float c = pickComponent(v, s);\n"
-      "    if (mode == 2u) return c * 2.0 - 1.0;\n"
-      "    if (mode == 3u) return pow(abs(c), 2.2);\n"
-      "    return c;\n"
-      "}\n"
-      "vec4 textureAdjust(uint slot, vec4 v) {\n"
-      "    uvec4 adj = textureAdjustment[slot];\n"
-      "    if (adj.x == 0x688u && (adj.y | adj.z | adj.w) == 0u) return v;\n"
-      "    vec4 r = vec4(adjustComponent(v, adj.x & 7u, adj.y & 3u),\n"
-      "                  adjustComponent(v, (adj.x >> 3u) & 7u, (adj.y >> 2u) & 3u),\n"
-      "                  adjustComponent(v, (adj.x >> 6u) & 7u, (adj.y >> 4u) & 3u),\n"
-      "                  adjustComponent(v, (adj.x >> 9u) & 7u, (adj.y >> 6u) & 3u));\n"
-      "    if (adj.z != 0u) r *= uintBitsToFloat(adj.z ^ 0x3F800000u);\n"
-      "    // Deferred resolve clamp: fast-path copies store their clamp mode here\n"
-      "    // instead of running a fullscreen resolve shader.\n"
-      "    if (adj.w == 1u) r = clamp(r, 0.0, 1.0);\n"
-      "    else if (adj.w == 2u) r = clamp(r, -1.0, 1.0);\n"
-      "    return r;\n"
-      "}\n";
+  // Safe hybrid FP16 for non-depth-writing fragment shaders (2x ALU + 2x register occupancy on
+  // Adreno 710): UVs & UV-feeder GPRs stay highp FP32; color/lighting/water GPRs & ALU use mediump
+  // FP16 with clamped exp2/rcp/rsq/kHuge so FP16 Inf/NaN is mathematically impossible.
+  const bool useMediump = pixel && !out.writesDepth;
 
   // Analyze which GPRs r[0..31] are actually referenced and whether relative GPR indexing is used.
   const bool hasRelativeGpr = (translator.body.find("r[(") != std::string::npos);
@@ -1237,7 +1593,173 @@ Translation Translate(const std::vector<uint32_t>& words, bool pixel) {
     translator.body.swap(scalarized);
   }
 
+  uint32_t liveInputs = 0u;
+  uint32_t highpGprMask = 0xFFFFFFFFu;
   if (pixel) {
+    liveInputs = (hasRelativeGpr || out.usedInterpreter)
+                     ? ((gprMask | translator.directPvMask) & 0xFFFFu)
+                     : ((translator.liveInputMask & (gprMask | translator.directPvMask)) & 0xFFFFu);
+    if (useMediump) {
+      if (hasRelativeGpr || out.usedInterpreter) {
+        highpGprMask = 0xFFFFFFFFu;
+      } else {
+        highpGprMask = translator.texCoordGprMask;
+        for (uint32_t d = 0; d < 32; ++d) {
+          if ((translator.texCoordGprMask & (1u << d)) != 0u) {
+            highpGprMask |= translator.interpFeeders[d];
+          }
+        }
+      }
+    }
+  }
+
+  std::string glsl;
+  glsl.reserve(translator.body.size() + 3072);
+  glsl += "#version 320 es\n";
+  if (useMediump) {
+    glsl +=
+        "#ifdef BS1_HIGHP\n"
+        "precision highp float;\n"
+        "#define BS1_MP highp\n"
+        "#else\n"
+        "precision mediump float;\n"
+        "#define BS1_MP mediump\n"
+        "#endif\n";
+  } else {
+    glsl += "precision highp float;\n";
+  }
+  glsl += "precision highp int;\n";
+  glsl += "// Translated from Xenos microcode by BioShock1 custom GLES 3.2 renderer.\n";
+  const uint32_t floatBinding = pixel ? 1u : 0u;
+  const char* floatBlockName = pixel ? "PsFloatConstants" : "VsFloatConstants";
+  const char* floatArrName = pixel ? "pc" : "vc";
+  glsl += Format("layout(std140, binding = %u) uniform %s { %s vec4 %s[256]; };\n",
+                 floatBinding, floatBlockName, useMediump ? "BS1_MP" : "highp", floatArrName);
+  glsl += "layout(std140, binding = 2) uniform BoolConstants { uvec4 bools[2]; uvec4 loops[8]; };\n";
+  if (useMediump) {
+    glsl +=
+        "layout(std140, binding = 3) uniform DrawConstants {\n"
+        "    highp vec4 viewportScale;\n"
+        "    highp vec4 viewportOffset;\n"
+        "    highp vec4 targetSize;\n"
+        "    highp uvec4 flags;\n"
+        "    highp vec4 texSize[32];\n"
+        "    BS1_MP vec4 texScale[32];\n"
+        "    BS1_MP vec4 texBias[32];\n"
+        "    highp uvec4 texFlags[8];\n"
+        "    highp vec4 pixelGen;\n"
+        "    BS1_MP vec4 colorExpBias;\n"
+        "    highp uvec4 vbSlice[16];\n"
+        "    highp vec4 texUvScale[16];\n"
+        "};\n";
+  } else {
+    glsl +=
+        "layout(std140, binding = 3) uniform DrawConstants {\n"
+        "    vec4 viewportScale;\n"
+        "    vec4 viewportOffset;\n"
+        "    vec4 targetSize;\n"
+        "    uvec4 flags;\n"
+        "    vec4 texSize[32];\n"
+        "    vec4 texScale[32];\n"
+        "    vec4 texBias[32];\n"
+        "    uvec4 texFlags[8];\n"
+        "    vec4 pixelGen;\n"
+        "    vec4 colorExpBias;\n"
+        "    uvec4 vbSlice[16];\n"
+        "    vec4 texUvScale[16];\n"
+        "};\n";
+  }
+  if (!pixel) {
+    glsl += "uint bswap(uint v) { return (v >> 24u) | ((v >> 8u) & 0xFF00u) | ((v << 8u) & 0xFF0000u) | (v << 24u); }\n";
+  }
+  if (translator.usesMax4) {
+    glsl += "float max4(vec4 v) { return max(max(v.x, v.y), max(v.z, v.w)); }\n";
+  }
+  if (translator.usesBlend1) {
+    glsl += "float blend1(bool set, float whenSet, float whenClear) { return set ? whenSet : whenClear; }\n";
+  }
+  if (translator.usesHuge) {
+    if (useMediump) {
+      glsl += "#ifdef BS1_HIGHP\nconst highp float kHuge = 3.402823466e38;\n#else\nconst highp float kHuge = 65000.0;\n#endif\n";
+    } else {
+      glsl += "const highp float kHuge = 3.402823466e38;\n";
+    }
+  }
+  if (translator.usesSafeExp2) {
+    if (useMediump) {
+      glsl += "#ifdef BS1_HIGHP\nhighp float safeExp2(highp float x) { return exp2(x); }\n#else\nhighp float safeExp2(highp float x) { return exp2(min(x, 15.9)); }\n#endif\n";
+    } else {
+      glsl += "highp float safeExp2(highp float x) { return exp2(x); }\n";
+    }
+  }
+  if (translator.usesSafeRcp) {
+    if (useMediump) {
+      glsl += "#ifdef BS1_HIGHP\nhighp float safeRcp(highp float x) { return 1.0 / x; }\n#else\nhighp float safeRcp(highp float x) { return clamp(1.0 / x, -65000.0, 65000.0); }\n#endif\n";
+    } else {
+      glsl += "highp float safeRcp(highp float x) { return 1.0 / x; }\n";
+    }
+  }
+  if (translator.usesSafeRsq) {
+    if (useMediump) {
+      glsl += "#ifdef BS1_HIGHP\nhighp float safeRsq(highp float x) { return inversesqrt(x); }\n#else\nhighp float safeRsq(highp float x) { return inversesqrt(max(x, 2.5e-10)); }\n#endif\n";
+    } else {
+      glsl += "highp float safeRsq(highp float x) { return inversesqrt(x); }\n";
+    }
+  }
+  if (translator.usesCubeMap) {
+    glsl +=
+        "highp float flipIf(highp float v, bool flip) { return uintBitsToFloat(floatBitsToUint(v) ^ (flip ? 0x80000000u : 0u)); }\n"
+        "vec4 cubeMapX(vec3 v) { return vec4(flipIf(v.z, v.x >= 0.0), flipIf(v.y, true), v.x >= 0.0 ? 0.0 : 1.0, 2.0 * abs(v.x)); }\n"
+        "vec4 cubeMapY(vec3 v) { return vec4(v.x, flipIf(v.z, v.y < 0.0), v.y >= 0.0 ? 2.0 : 3.0, 2.0 * abs(v.y)); }\n"
+        "vec4 cubeMapZ(vec3 v) { return vec4(flipIf(v.x, v.z < 0.0), flipIf(v.y, true), v.z >= 0.0 ? 4.0 : 5.0, 2.0 * abs(v.z)); }\n"
+        "vec4 cubeMap(vec4 a, vec4 b) {\n"
+        "    return (abs(a.x) >= abs(a.y) && abs(a.x) >= abs(a.z)) ? cubeMapX(a.xyz) : (abs(a.y) >= abs(a.z)) ? cubeMapY(a.xyz) : cubeMapZ(a.xyz); }\n";
+  }
+  if (translator.usesCubeDir) {
+    glsl +=
+        "highp vec3 cubeDirection(highp vec3 c) {\n"
+        "    uint face = uint(c.z);\n"
+        "    highp vec3 major = face == 0u ? vec3(1.0, 0.0, 0.0) : face == 1u ? vec3(-1.0, 0.0, 0.0) : face == 2u ? vec3(0.0, 1.0, 0.0)\n"
+        "        : face == 3u ? vec3(0.0, -1.0, 0.0) : face == 4u ? vec3(0.0, 0.0, 1.0) : vec3(0.0, 0.0, -1.0);\n"
+        "    highp vec3 sx = face == 0u ? vec3(0.0, 0.0, -1.0) : face == 1u ? vec3(0.0, 0.0, 1.0) : face == 5u ? vec3(-1.0, 0.0, 0.0) : vec3(1.0, 0.0, 0.0);\n"
+        "    highp vec3 sy = face == 2u ? vec3(0.0, 0.0, 1.0) : face == 3u ? vec3(0.0, 0.0, -1.0) : vec3(0.0, -1.0, 0.0);\n"
+        "    return major + sx * c.x + sy * c.y; }\n";
+  }
+
+  // Separate texture binding ranges for VS (12..15) and PS (0..11) so linked programs never collide.
+  const uint32_t texBaseUnit = pixel ? 0u : 12u;
+  for (TextureFetch& fetch : out.textureFetches) {
+    fetch.binding += texBaseUnit;
+    const char* type = fetch.dimension == 3 ? "samplerCube" : "sampler2D";
+    glsl += Format("layout(binding = %u) uniform %s %s %st%u;\n",
+                   fetch.binding, useMediump ? "BS1_MP" : "highp", type,
+                   pixel ? "p" : "v", fetch.binding - texBaseUnit);
+  }
+
+  if (!out.textureFetches.empty()) {
+    glsl +=
+        "vec4 textureAdjust(uint slot, vec4 v) {\n"
+        "    uint fl = texFlags[slot >> 2u][slot & 3u];\n"
+        "    if ((fl & 0x3Cu) != 0u) {\n"
+        "        vec4 a = abs(v);\n"
+        "        vec4 lin = a * (a * (a * 0.305306011 + 0.682171111) + 0.012522878);\n"
+        "        v = mix(v, lin, bvec4((fl & 4u) != 0u, (fl & 8u) != 0u, (fl & 16u) != 0u, (fl & 32u) != 0u));\n"
+        "    }\n"
+        "    vec4 r = v * texScale[slot] + texBias[slot];\n"
+        "    uint cm = fl & 3u;\n"
+        "    if (cm == 1u) r = clamp(r, 0.0, 1.0);\n"
+        "    else if (cm == 2u) r = clamp(r, -1.0, 1.0);\n"
+        "    return r;\n"
+        "}\n";
+  }
+
+  if (pixel) {
+    for (uint32_t i = 0; i < 32; ++i) {
+      if ((gprMask & (1u << i)) == 0) continue;
+      const char* prec = (!useMediump || ((highpGprMask & (1u << i)) != 0u)) ? "highp" : "BS1_MP";
+      glsl += Format("#define BS1_P_%u %s\n", i, prec);
+    }
+
     out.colourTargets = 0;
     for (uint32_t e : translator.exportsUsed) {
       if (e < 4) out.colourTargets |= 1u << e;
@@ -1248,50 +1770,72 @@ Translation Translate(const std::vector<uint32_t>& words, bool pixel) {
       glsl += "#ifndef BS1_ALPHA_TEST\nlayout(early_fragment_tests) in;\n#endif\n";
     }
 
+    uint32_t interpolators = 0;
     for (uint32_t i = 0; i < 16; ++i) {
-      if ((gprMask & (1u << i)) != 0) {
-        glsl += Format("layout(location = %u) in vec4 v_o%u;\n", i, i);
+      if ((liveInputs & (1u << i)) != 0u) {
+        glsl += Format("layout(location = %u) in highp vec4 v_o%u;\n", i, i);
+        interpolators = i + 1;
       }
     }
+    out.interpolators = interpolators;
     for (uint32_t i = 0; i < 4; ++i) {
       if ((out.colourTargets & (1u << i)) != 0) {
-        glsl += Format("layout(location = %u) out vec4 frag_c%u;\n", i, i);
+        glsl += Format("layout(location = %u) out %s vec4 frag_c%u;\n",
+                       i, useMediump ? "BS1_MP" : "highp", i);
       }
     }
+    if (liveInputs != 0u) {
+      glsl += "#ifndef BS1_PIXEL_GEN\n";
+      for (uint32_t i = 0; i < 16; ++i) {
+        if ((liveInputs & (1u << i)) != 0u) {
+          glsl += Format("#define p_v%u v_o%u\n", i, i);
+        }
+      }
+      glsl += "#endif\n";
+    }
     glsl += "void main() {\n";
-    if (hasRelativeGpr) {
-      glsl += "    vec4 r[32];\n";
-      for (uint32_t i = 0; i < 32; ++i) {
-        glsl += i < 16 ? Format("    r[%u] = v_o%u;\n", i, i)
-                       : Format("    r[%u] = vec4(0.0);\n", i);
+    if (liveInputs != 0u) {
+      glsl += "#ifdef BS1_PIXEL_GEN\n";
+      for (uint32_t i = 0; i < 16; ++i) {
+        if ((liveInputs & (1u << i)) != 0u) {
+          glsl += Format("    highp vec4 p_v%u = v_o%u;\n", i, i);
+        }
       }
       glsl +=
           "    if (pixelGen.w != 0.0) {\n"
-          "        vec2 at = floor(gl_FragCoord.xy) * pixelGen.xy;\n"
-          "        vec4 generated = vec4(uintBitsToFloat(floatBitsToUint(at.x) | (gl_FrontFacing ? 0u : 0x80000000u)), at.y, 0.0, 0.0);\n"
+          "        highp vec2 at = floor(gl_FragCoord.xy) * pixelGen.xy;\n"
+          "        highp vec4 generated = vec4(uintBitsToFloat(floatBitsToUint(at.x) | (gl_FrontFacing ? 0u : 0x80000000u)), at.y, 0.0, 0.0);\n"
           "        uint slot = uint(pixelGen.z);\n";
-      for (uint32_t i = 0; i < 32; ++i) {
-        glsl += Format("        if (slot == %uu) r[%u] = generated;\n", i, i);
+      for (uint32_t i = 0; i < 16; ++i) {
+        if ((liveInputs & (1u << i)) != 0u) {
+          glsl += Format("        if (slot == %uu) p_v%u = generated;\n", i, i);
+        }
       }
-      glsl += "    }\n";
+      glsl += "    }\n#endif\n";
+    }
+    if (hasRelativeGpr) {
+      glsl += "    highp vec4 r[32];\n";
+      for (uint32_t i = 0; i < 32; ++i) {
+        glsl += (i < 16 && (liveInputs & (1u << i)) != 0u)
+                    ? Format("    r[%u] = p_v%u;\n", i, i)
+                    : Format("    r[%u] = vec4(0.0);\n", i);
+      }
     } else {
       for (uint32_t i = 0; i < 32; ++i) {
         if ((gprMask & (1u << i)) == 0) continue;
-        glsl += i < 16 ? Format("    vec4 r%u = v_o%u;\n", i, i)
-                       : Format("    vec4 r%u = vec4(0.0);\n", i);
+        const char* prec = (!useMediump || ((highpGprMask & (1u << i)) != 0u)) ? "highp" : "BS1_MP";
+        glsl += (i < 16 && (liveInputs & (1u << i)) != 0u)
+                    ? Format("    %s vec4 r%u = p_v%u;\n", prec, i, i)
+                    : Format("    %s vec4 r%u = vec4(0.0);\n", prec, i);
       }
-      glsl +=
-          "    if (pixelGen.w != 0.0) {\n"
-          "        vec2 at = floor(gl_FragCoord.xy) * pixelGen.xy;\n"
-          "        vec4 generated = vec4(uintBitsToFloat(floatBitsToUint(at.x) | (gl_FrontFacing ? 0u : 0x80000000u)), at.y, 0.0, 0.0);\n"
-          "        uint slot = uint(pixelGen.z);\n";
-      for (uint32_t i = 0; i < 32; ++i) {
-        if ((gprMask & (1u << i)) == 0) continue;
-        glsl += Format("        if (slot == %uu) r%u = generated;\n", i, i);
-      }
-      glsl += "    }\n";
     }
-    glsl += "    vec4 oC0 = vec4(0.0), oC1 = vec4(0.0), oC2 = vec4(0.0), oC3 = vec4(0.0), oDepth4 = vec4(0.0), oUnused = vec4(0.0);\n";
+    glsl += "    vec4 oC0 = vec4(0.0);";
+    if (translator.exportsUsed.count(1)) glsl += " vec4 oC1 = vec4(0.0);";
+    if (translator.exportsUsed.count(2)) glsl += " vec4 oC2 = vec4(0.0);";
+    if (translator.exportsUsed.count(3)) glsl += " vec4 oC3 = vec4(0.0);";
+    if (out.writesDepth) glsl += " highp vec4 oDepth4 = vec4(0.0);";
+    if (translator.body.find("oUnused") != std::string::npos) glsl += " vec4 oUnused = vec4(0.0);";
+    glsl += "\n";
   } else {
     for (uint32_t slot : translator.vertexSlotOrder) {
       const uint32_t binding = translator.vertexSlotToBinding[slot];
@@ -1333,18 +1877,25 @@ Translation Translate(const std::vector<uint32_t>& words, bool pixel) {
         "    uvec2 fetchWords = uvec2(0u); uvec4 fetchWords4 = uvec4(0u);\n";
   }
 
-  glsl +=
-      "    vec4 fetched = vec4(0.0); float ps = 0.0; float textureLodVal = 0.0;\n"
-      "    int a0 = 0; bool p0 = false;\n"
-      "    int programCounter = 0; int aL = 0; uint depth = 0u; uint loopCount[4]; int loopAddress[4];\n"
-      "    loopCount[0] = 0u; loopCount[1] = 0u; loopCount[2] = 0u; loopCount[3] = 0u;\n"
-      "    loopAddress[0] = 0; loopAddress[1] = 0; loopAddress[2] = 0; loopAddress[3] = 0;\n";
+  if (translator.usesFetched) glsl += "    vec4 fetched = vec4(0.0);\n";
+  if (translator.usesPs) glsl += "    highp float ps = 0.0;\n";
+  if (translator.usesTexLod) glsl += "    highp float textureLodVal = 0.0;\n";
+  if (translator.usesA0) glsl += "    int a0 = 0;\n";
+  if (translator.usesP0) glsl += "    bool p0 = false;\n";
+  if (translator.usesPC) glsl += "    int programCounter = 0;\n";
+  if (translator.usesAL) glsl += "    int aL = 0;\n";
+  if (translator.usesLoopStack) {
+    glsl +=
+        "    uint depth = 0u; uint loopCount[4]; int loopAddress[4];\n"
+        "    loopCount[0] = 0u; loopCount[1] = 0u; loopCount[2] = 0u; loopCount[3] = 0u;\n"
+        "    loopAddress[0] = 0; loopAddress[1] = 0; loopAddress[2] = 0; loopAddress[3] = 0;\n";
+  }
   glsl += translator.body;
 
   if (pixel) {
     glsl +=
         "#ifdef BS1_ALPHA_TEST\n"
-        "    { uint fn = flags.y; float ref = uintBitsToFloat(flags.z); float a = oC0.w; bool passes = true;\n"
+        "    { uint fn = flags.y; highp float ref = uintBitsToFloat(flags.z); highp float a = oC0.w; bool passes = true;\n"
         "      if (fn == 0u) passes = false; else if (fn == 1u) passes = a < ref; else if (fn == 2u) passes = a == ref;\n"
         "      else if (fn == 3u) passes = a <= ref; else if (fn == 4u) passes = a > ref; else if (fn == 5u) passes = a != ref;\n"
         "      else if (fn == 6u) passes = a >= ref;\n"
@@ -1353,7 +1904,17 @@ Translation Translate(const std::vector<uint32_t>& words, bool pixel) {
     const char* biasLane[4] = {"x", "y", "z", "w"};
     for (uint32_t i = 0; i < 4; ++i) {
       if ((out.colourTargets & (1u << i)) != 0) {
-        glsl += Format("    frag_c%u = oC%u * colorExpBias.%s;\n", i, i, biasLane[i]);
+        if (useMediump) {
+          glsl += Format(
+              "#ifdef BS1_HIGHP\n"
+              "    frag_c%u = oC%u * colorExpBias.%s;\n"
+              "#else\n"
+              "    frag_c%u = clamp(oC%u * colorExpBias.%s, vec4(-65000.0), vec4(65000.0));\n"
+              "#endif\n",
+              i, i, biasLane[i], i, i, biasLane[i]);
+        } else {
+          glsl += Format("    frag_c%u = oC%u * colorExpBias.%s;\n", i, i, biasLane[i]);
+        }
       }
     }
     if (out.writesDepth) {

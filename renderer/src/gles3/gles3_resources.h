@@ -4,6 +4,7 @@
 
 #include <atomic>
 #include <cstdint>
+#include <cstring>
 #include <memory>
 #include <unordered_map>
 #include <vector>
@@ -32,6 +33,7 @@ class Gles3Resources final : public rex::IPhysicalWriteListener {
     uint32_t msaa = 0;
     uint32_t format = 0;
     uint64_t lastFrame = 0;
+    mutable uint64_t drawGen = 0;
   };
 
   struct DepthTarget {
@@ -43,6 +45,7 @@ class Gles3Resources final : public rex::IPhysicalWriteListener {
     uint32_t rows = 0;
     uint32_t msaa = 0;
     uint64_t lastFrame = 0;
+    mutable uint64_t drawGen = 0;
   };
 
   struct Resolved {
@@ -57,11 +60,18 @@ class Gles3Resources final : public rex::IPhysicalWriteListener {
     bool rbSwapped = false;
     // Set when a resolve used glCopyImageSubData with a non-unit exponent bias /
     // a clamp mode. The shader path applied these at resolve time; for the fast
-    // path they are deferred to sample time via textureAdjustment[].
+    // path they are deferred to sample time via texScale/texBias/texFlags.
     int8_t expBias = 0;
     uint8_t clampMode = 0;  // 0 = none, 1 = [0,1], 2 = [-1,1]
     uint32_t lastWriteSeq = 0;
     uint64_t lastFrame = 0;
+    mutable uint32_t hwSwizzle = 0x688u;
+    GLuint lastSrcTex = 0;
+    uint64_t lastSrcDrawGen = 0;
+    int32_t lastSrcX0 = 0;
+    int32_t lastSrcY0 = 0;
+    uint32_t lastHostW = 0;
+    uint32_t lastHostH = 0;
   };
 
   struct GuestTexture {
@@ -80,8 +90,10 @@ class Gles3Resources final : public rex::IPhysicalWriteListener {
     uint32_t uploadSeq = 0;
     uint32_t rewriteStreak = 0;
     bool compressed = false;
+    bool hwSrgb = false;
     bool watchArmed = false;
     uint64_t watchToken = 0;
+    mutable uint32_t hwSwizzle = 0x688u;
   };
 
   struct VertexBuffer {
@@ -133,20 +145,32 @@ class Gles3Resources final : public rex::IPhysicalWriteListener {
                   uint32_t& heightOut, float& scaleXOut, float& scaleYOut) const;
 
   const ColorTarget* ColorTargetFor(uint32_t colorInfo, uint32_t surfaceInfo);
-  const ColorTarget* PrimaryColorTargetAt(uint32_t colorInfo, uint32_t pitch, uint32_t cls) const;
+  const ColorTarget* PrimaryColorTargetAt(uint32_t colorInfo, uint32_t pitch, uint32_t cls,
+                                          int32_t clearBottom) const;
   const DepthTarget* DepthTargetFor(uint32_t depthInfo, uint32_t surfaceInfo);
-  const DepthTarget* PrimaryDepthTargetAt(uint32_t depthInfo, uint32_t pitch, uint32_t cls) const;
+  const DepthTarget* PrimaryDepthTargetAt(uint32_t depthInfo, uint32_t pitch, uint32_t cls,
+                                          int32_t clearBottom) const;
 
   Resolved* ResolvedFor(uint32_t base, uint32_t width, uint32_t height, GLenum internalFormat,
                         bool isDepth);
   const Resolved* ResolvedAt(uint32_t base) const;
+  inline bool IsResolvedDepth(uint32_t base) const {
+    if (resolvedDepthCount_ == 0u) return false;
+    const uint32_t addr = base & 0x1FFFF000u;
+    for (uint32_t i = 0; i < resolvedDepthCount_; ++i) {
+      if (resolvedDepthAddrs_[i] == addr) return true;
+    }
+    return false;
+  }
   uint32_t CurrentWriteSeq() const { return writeSeq_.load(std::memory_order_acquire); }
+  bool CheckRangeClean(uint32_t physAddr, uint32_t bytes, uint32_t& lastSeq, bool& watchArmed);
   const Resolved* LastFrontbuffer() const { return lastFrontbuffer_; }
   void SetLastFrontbuffer(const Resolved* r) { lastFrontbuffer_ = r; }
 
   /** Returns GL texture handle + target (2D/Cube) for guest texture fetch words[6]. */
   GLuint TextureFor(const uint32_t words[6], uint32_t& widthOut, uint32_t& heightOut,
-                    bool& isCubeOut, const Resolved*& resolvedOut);
+                    bool& isCubeOut, const Resolved*& resolvedOut,
+                    bool* hwSrgbOut = nullptr, uint32_t** hwSwizzlePtrOut = nullptr);
 
   GLuint VertexBufferFor(uint32_t address, uint32_t bytes, size_t& offsetOut,
                          size_t& rangeSizeOut, GLuint* tboOut = nullptr);
@@ -190,7 +214,8 @@ class Gles3Resources final : public rex::IPhysicalWriteListener {
   void ArmWatch(uint32_t start, uint32_t size);
 
   void DestroyScaledTargets();
-  void UploadTextureData(GuestTexture& tex, const uint32_t words[6]);
+  void ClearColorTextureZero(GLuint tex);
+  void UploadTextureData(GuestTexture& tex, const uint32_t words[6], bool wantSrgb);
   void UploadVertexTbo(VertexBuffer& vb, const uint8_t* ptr, uint32_t exactSize);
   void RecycleVertexBufferGl(VertexBuffer& vb, bool allowPool);
   static void DeleteVertexBufferGl(VertexBuffer& vb);
@@ -214,6 +239,7 @@ class Gles3Resources final : public rex::IPhysicalWriteListener {
   uint32_t anisotropy_ = 4;
   float maxDeviceAniso_ = 1.0f;
   bool hasS3tc_ = false;
+  bool hasS3tcSrgb_ = false;
   bool hasRgtc_ = false;
   bool hasNorm16_ = false;
   bool hasBorderClamp_ = false;
@@ -245,12 +271,38 @@ class Gles3Resources final : public rex::IPhysicalWriteListener {
   std::unordered_map<uint64_t, ColorTarget> colorTargets_;
   std::unordered_map<uint64_t, DepthTarget> depthTargets_;
   std::unordered_map<uint32_t, Resolved> resolved_;
+  uint32_t resolvedDepthAddrs_[16] = {};
+  uint32_t resolvedDepthCount_ = 0;
+  void RebuildResolvedDepthList();
   const Resolved* lastFrontbuffer_ = nullptr;
 
   std::unordered_map<uint64_t, GuestTexture> textures_;
   std::unordered_map<uint64_t, VertexBuffer> vertexBuffers_;
   std::unordered_map<uint64_t, StaticIndexBuffer> indexBuffers_;
   std::unordered_map<uint64_t, GLuint> samplers_;
+
+  // Direct-mapped inline L1 caches to avoid std::unordered_map bucket pointer-chasing in hot draw loops.
+  // Always cleared whenever any entry is erased from the backing map.
+  struct VbL1Entry {
+    uint64_t key = 0;
+    VertexBuffer* ptr = nullptr;
+  };
+  struct IbL1Entry {
+    uint64_t key = 0;
+    StaticIndexBuffer* ptr = nullptr;
+  };
+  VbL1Entry vbL1_[256] = {};
+  IbL1Entry ibL1_[256] = {};
+  uint64_t lastColorKey_ = 0;
+  ColorTarget* lastColorPtr_ = nullptr;
+  uint64_t lastDepthKey_ = 0;
+  DepthTarget* lastDepthPtr_ = nullptr;
+  void ClearVbL1() { std::memset(vbL1_, 0, sizeof(vbL1_)); }
+  void ClearIbL1() { std::memset(ibL1_, 0, sizeof(ibL1_)); }
+  void ClearTargetL1() {
+    lastColorPtr_ = nullptr;
+    lastDepthPtr_ = nullptr;
+  }
 
   std::vector<uint8_t> texScratch_;
   std::vector<uint32_t> idxScratch_;
@@ -260,6 +312,7 @@ class Gles3Resources final : public rex::IPhysicalWriteListener {
   GLuint linearClampSampler_ = 0;
   GLuint nearestClampSampler_ = 0;
   GLuint gammaTex_ = 0;
+  GLuint clearFbo_ = 0;
   uint64_t gammaVersion_ = 0;
   bool gammaValid_ = false;
 

@@ -203,12 +203,32 @@ bool Gles3Backend::InitEgl() {
     return false;
   }
 
-  const EGLint ctxAttribs[] = {
-      EGL_CONTEXT_MAJOR_VERSION, 3,
-      EGL_CONTEXT_MINOR_VERSION, 2,
-      EGL_NONE,
-  };
-  context_ = eglCreateContext(display_, config_, EGL_NO_CONTEXT, ctxAttribs);
+  constexpr EGLint kEglContextOpenGlNoErrorKhr = 0x31B3;
+  const char* eglExts = eglQueryString(display_, EGL_EXTENSIONS);
+  const bool hasNoErrorExt =
+      eglExts && std::strstr(eglExts, "EGL_KHR_create_context_no_error") != nullptr;
+  noErrorContext_ = false;
+  context_ = EGL_NO_CONTEXT;
+  if (hasNoErrorExt) {
+    const EGLint ctxAttribsNoErr[] = {
+        EGL_CONTEXT_MAJOR_VERSION, 3,
+        EGL_CONTEXT_MINOR_VERSION, 2,
+        kEglContextOpenGlNoErrorKhr, EGL_TRUE,
+        EGL_NONE,
+    };
+    context_ = eglCreateContext(display_, config_, EGL_NO_CONTEXT, ctxAttribsNoErr);
+    if (context_ != EGL_NO_CONTEXT) {
+      noErrorContext_ = true;
+    }
+  }
+  if (context_ == EGL_NO_CONTEXT) {
+    const EGLint ctxAttribs[] = {
+        EGL_CONTEXT_MAJOR_VERSION, 3,
+        EGL_CONTEXT_MINOR_VERSION, 2,
+        EGL_NONE,
+    };
+    context_ = eglCreateContext(display_, config_, EGL_NO_CONTEXT, ctxAttribs);
+  }
   if (context_ == EGL_NO_CONTEXT) {
     GLESERR("eglCreateContext(GLES 3.2) failed (0x%x)", eglGetError());
     return false;
@@ -233,6 +253,42 @@ bool Gles3Backend::InitEgl() {
   hasDepthClamp_ = exts && std::strstr(exts, "GL_EXT_depth_clamp") != nullptr;
   hasBufferStorage_ = glBufferStorageExt_ && exts &&
                       std::strstr(exts, "GL_EXT_buffer_storage") != nullptr;
+  // Hardware Variable Rate Shading: prefer standard GL_EXT_fragment_shading_rate (with explicit
+  // KEEP/KEEP combiner ops so pipeline rate takes effect on Adreno 7xx), fall back to QCOM.
+  glShadingRateFn_ = nullptr;
+  glShadingRateCombinerOpsExt_ = nullptr;
+  lastShadingRate_ = 0x96A6u;
+  const char* vrsKind = "none";
+  if (exts && std::strstr(exts, "GL_EXT_fragment_shading_rate") != nullptr) {
+    glShadingRateFn_ = reinterpret_cast<ShadingRateFn>(eglGetProcAddress("glShadingRateEXT"));
+    glShadingRateCombinerOpsExt_ = reinterpret_cast<ShadingRateCombinerOpsFn>(
+        eglGetProcAddress("glShadingRateCombinerOpsEXT"));
+    if (glShadingRateFn_) vrsKind = "EXT";
+  }
+  if (!glShadingRateFn_ && exts && std::strstr(exts, "GL_QCOM_shading_rate") != nullptr) {
+    glShadingRateFn_ = reinterpret_cast<ShadingRateFn>(eglGetProcAddress("glShadingRateQCOM"));
+    if (glShadingRateFn_) vrsKind = "QCOM";
+  }
+  if (glShadingRateFn_) {
+    while (glGetError() != GL_NO_ERROR) {}
+    if (glShadingRateCombinerOpsExt_) {
+      glShadingRateCombinerOpsExt_(0x96D2u /* KEEP */, 0x96D2u /* KEEP */);
+    }
+    const GLenum errComb = glGetError();
+    glShadingRateFn_(0x96A9u /* 2x2 */);
+    const GLenum err22 = glGetError();
+    GLint read22 = 0;
+    glGetIntegerv(0x96A4u /* GL_SHADING_RATE_EXT/QCOM */, &read22);
+    const GLenum errGet = glGetError();
+    glShadingRateFn_(0x96A6u /* 1x1 */);
+    const GLenum err11 = glGetError();
+    GLESLOG("VRS-CHECK kind=%s comb=%d errComb=0x%x err22=0x%x read22=0x%x errGet=0x%x err11=0x%x",
+            vrsKind, glShadingRateCombinerOpsExt_ ? 1 : 0, errComb, err22, read22, errGet, err11);
+    if (err22 != GL_NO_ERROR || err11 != GL_NO_ERROR) {
+      glShadingRateFn_ = nullptr;
+      vrsKind = "failed";
+    }
+  }
 
   // Mali GPUs expose zero vertex shader storage blocks, but do support texture
   // buffers (GL_EXT_texture_buffer). Use samplerBuffer for guest vertex fetch.
@@ -248,13 +304,14 @@ bool Gles3Backend::InitEgl() {
   glGetIntegerv(GL_MAX_COMBINED_TEXTURE_IMAGE_UNITS, &maxCombined);
   glGetIntegerv(GL_MAX_VERTEX_TEXTURE_IMAGE_UNITS, &maxVertTex);
   glGetIntegerv(GL_MAX_TEXTURE_IMAGE_UNITS, &maxFragTex);
-  GLESLOG("EGL %d.%d + GLES '%s' on '%s' (clipControl=%d depthClamp=%d bufStorage=%d "
+  GLESLOG("EGL %d.%d + GLES '%s' on '%s' (noErr=%d clipControl=%d depthClamp=%d bufStorage=%d vrs=%d "
           "texUnits=%d/%d/%d maxVSSSBO=%d)",
           major, minor,
           reinterpret_cast<const char*>(glGetString(GL_VERSION)),
           reinterpret_cast<const char*>(glGetString(GL_RENDERER)),
-          glClipControlExt_ ? 1 : 0, hasDepthClamp_ ? 1 : 0, hasBufferStorage_ ? 1 : 0,
-          maxCombined, maxVertTex, maxFragTex, maxVertexSSBOs);
+          noErrorContext_ ? 1 : 0, glClipControlExt_ ? 1 : 0, hasDepthClamp_ ? 1 : 0,
+          hasBufferStorage_ ? 1 : 0, glShadingRateFn_ ? 1 : 0, maxCombined, maxVertTex,
+          maxFragTex, maxVertexSSBOs);
 
   glGenVertexArrays(1, &emptyVao_);
   glBindVertexArray(emptyVao_);
@@ -288,6 +345,17 @@ bool Gles3Backend::InitEgl() {
   glBindBuffer(GL_UNIFORM_BUFFER, uboPresent_);
   glBufferData(GL_UNIFORM_BUFFER, sizeof(PresentParamsCpu), nullptr, GL_DYNAMIC_DRAW);
   glBindBuffer(GL_UNIFORM_BUFFER, 0);
+  for (uint32_t s = 0; s < 32u; ++s) {
+    for (uint32_t c = 0; c < 4u; ++c) {
+      drawConst_.texScale[s][c] = 1.0f;
+      drawConst_.texBias[s][c] = 0.0f;
+    }
+  }
+  for (uint32_t s = 0; s < 16u; ++s) {
+    for (uint32_t c = 0; c < 4u; ++c) {
+      drawConst_.texUvScale[s][c] = 1.0f;
+    }
+  }
 
   glGenBuffers(1, &indexBuf_);
   glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, indexBuf_);
@@ -315,7 +383,7 @@ bool Gles3Backend::EnsureInitialized(rex::IPhysicalMemory* memory,
                                      rex::IPhysicalWriteWatch* watch) {
   if (!InitEgl()) return false;
   if (shaders_.PresentLanczosProgram() == 0) {
-    shaders_.Initialize(cacheDir_, display_, config_, context_);
+    shaders_.Initialize(cacheDir_, display_, config_, context_, noErrorContext_);
     resources_.SetUseVertexTextureBuffers(XenosGlsl::VertexTextureBuffers());
     resources_.Initialize(memory, watch);
   }
@@ -428,25 +496,25 @@ void Gles3Backend::ShutdownOnGpuThread() {
 bool Gles3Backend::BeginFrame(uint64_t frame) {
   UpdatePendingSurface();
   shaders_.PollCompleted();
-  if (resolveDumpActive_) {
-    resolveDumpActive_ = false;
-    resolveDumpDone_ = true;
-    GLESLOG("RES-DUMP: end frame=%llu totalResolves=%u",
-            static_cast<unsigned long long>(frame), frameResolves_);
-  } else if (!resolveDumpDone_ && frame > 250u && frameResolves_ >= 25u) {
-    resolveDumpActive_ = true;
-    GLESLOG("RES-DUMP: start frame=%llu", static_cast<unsigned long long>(frame));
-  }
+  gpuProfActive_ = false;
+  resolveDumpActive_ = false;
   frameResolves_ = 0;
+  sampleDrawBreak_ = false;
   lastResolveKey_ = ResolveKey{};
   drawsSinceResolve_ = 0;
   lastResolveDestBase_ = 0;
+  lastColorResolveSrcTex_ = 0;
   sameDestResolveStreak_ = 0;
   only3DMeshDrawsSinceResolve_ = true;
   pendingResolve_.valid = false;
+  SetShadingRate(0x96A6u);
   std::memset(boundVbTex_, 0, sizeof(boundVbTex_));
-  ++resolveGen_;
+  if ((frame & 127u) == 0u) {
+    // Match textures_ periodic eviction cadence so TexSlotCache::hwSwizzlePtr can never dangle.
+    ++resolveGen_;
+  }
   if (resources_.BeginFrame(frame)) {
+    ++resolveGen_;
     for (uint32_t i = 0; i < 4; ++i) lastFboColor_[i] = 0;
     lastFboDepth_ = 0;
     drawFboBound_ = false;
@@ -455,14 +523,58 @@ bool Gles3Backend::BeginFrame(uint64_t frame) {
   return false;
 }
 
+void Gles3Backend::SetShadingRate(GLenum rate) {
+  if (glShadingRateFn_ && lastShadingRate_ != rate) {
+    glShadingRateFn_(rate);
+    lastShadingRate_ = rate;
+  }
+}
+
 void Gles3Backend::FlushPendingResolve() {
   if (!pendingResolve_.valid) return;
+  const PendingResolve pr = pendingResolve_;
   pendingResolve_.valid = false;
   ++resolveStats_.directCopy;
-  glCopyImageSubData(pendingResolve_.srcTex, GL_TEXTURE_2D, 0, pendingResolve_.srcX0,
-                     pendingResolve_.srcY0, 0, pendingResolve_.dstTex, GL_TEXTURE_2D, 0, 0, 0, 0,
-                     static_cast<GLsizei>(pendingResolve_.hostW),
-                     static_cast<GLsizei>(pendingResolve_.hostH), 1);
+  if (gpuProfActive_) {
+    using clk = std::chrono::steady_clock;
+    auto nowMs = []() {
+      return std::chrono::duration<double, std::milli>(clk::now().time_since_epoch()).count();
+    };
+    glFinish();
+    const double tBeforeCopy = nowMs();
+    const double drawMs = tBeforeCopy - gpuProfLastStampMs_;
+    glCopyImageSubData(pr.srcTex, GL_TEXTURE_2D, 0, pr.srcX0, pr.srcY0, 0,
+                       pr.dstTex, GL_TEXTURE_2D, 0, 0, 0, 0,
+                       static_cast<GLsizei>(pr.hostW), static_cast<GLsizei>(pr.hostH), 1);
+    glFinish();
+    const double tAfterCopy = nowMs();
+    const double copyMs = tAfterCopy - tBeforeCopy;
+    gpuProfTotalDrawMs_ += drawMs;
+    gpuProfTotalCopyMs_ += copyMs;
+    gpuProfLastStampMs_ = tAfterCopy;
+    GLESLOG("GPU-PROF: FLUSH C %ux%u base=0x%08x | draws=%u(rect=%u idx=%u at=%u sk=%u vrs=%u) tex=%u(slow=%u srgb=%u) | drawGpu=%.2fms copyGpu=%.2fms lastPs=%016llx(len=%u)",
+            pr.hostW, pr.hostH, pr.destBase, gpuProfPassDraws_, gpuProfPassRects_,
+            gpuProfPassIndices_, gpuProfPassAlphaTest_, gpuProfPassShaderKill_,
+            gpuProfPassVrsDraws_, gpuProfPassFetches_, gpuProfPassAdjSlow_,
+            gpuProfPassSrgb_, drawMs, copyMs, static_cast<unsigned long long>(gpuProfPassLastPs_),
+            gpuProfPassMaxPsLen_);
+    gpuProfPassDraws_ = 0;
+    gpuProfPassIndices_ = 0;
+    gpuProfPassRects_ = 0;
+    gpuProfPassFetches_ = 0;
+    gpuProfPassAdjSlow_ = 0;
+    gpuProfPassSrgb_ = 0;
+    gpuProfPassAlphaTest_ = 0;
+    gpuProfPassShaderKill_ = 0;
+    gpuProfPassVrsDraws_ = 0;
+    gpuProfPassLastPs_ = 0;
+    gpuProfPassLastVs_ = 0;
+    gpuProfPassMaxPsLen_ = 0;
+  } else {
+    glCopyImageSubData(pr.srcTex, GL_TEXTURE_2D, 0, pr.srcX0, pr.srcY0, 0,
+                       pr.dstTex, GL_TEXTURE_2D, 0, 0, 0, 0,
+                       static_cast<GLsizei>(pr.hostW), static_cast<GLsizei>(pr.hostH), 1);
+  }
 }
 
 void Gles3Backend::UnbindTexturesMatching(GLuint tex) {
@@ -479,13 +591,18 @@ void Gles3Backend::UnbindTexturesMatching(GLuint tex) {
 }
 
 void Gles3Backend::ApplyBlendState(const uint32_t blendControl[4], uint32_t colorMask,
-                                   const float blendFactor[4]) {
-  glBlendColor(blendFactor[0], blendFactor[1], blendFactor[2], blendFactor[3]);
+                                   const float blendFactor[4], bool forceAll) {
+  if (forceAll || std::memcmp(lastBlendFactor_, blendFactor, sizeof(lastBlendFactor_)) != 0) {
+    glBlendColor(blendFactor[0], blendFactor[1], blendFactor[2], blendFactor[3]);
+  }
   for (uint32_t i = 0; i < 4; ++i) {
     const uint32_t cm = (colorMask >> (i * 4)) & 0xFu;
-    glColorMaski(i, (cm & 1u) != 0, (cm & 2u) != 0, (cm & 4u) != 0, (cm & 8u) != 0);
+    if (forceAll || ((lastColorMask_ >> (i * 4)) & 0xFu) != cm) {
+      glColorMaski(i, (cm & 1u) != 0, (cm & 2u) != 0, (cm & 4u) != 0, (cm & 8u) != 0);
+    }
 
     const uint32_t bc = blendControl[i];
+    if (!forceAll && lastBlendCtrl_[i] == bc) continue;
     const uint32_t srcRgb = bc & 0x1Fu;
     const uint32_t opRgb = (bc >> 5) & 7u;
     const uint32_t dstRgb = (bc >> 8) & 0x1Fu;
@@ -606,6 +723,13 @@ void Gles3Backend::ApplyRasterizerState(uint32_t suScModeControl, uint32_t clipC
 
 bool Gles3Backend::ExecuteDraw(const uint32_t* regs, uint32_t initiator, uint32_t indexBase,
                                rex::IPhysicalMemory* memory) {
+  const bool sampleBreak = sampleDrawBreak_ && !gpuProfActive_;
+  auto sampleNowMs = []() {
+    return std::chrono::duration<double, std::milli>(
+               std::chrono::steady_clock::now().time_since_epoch())
+        .count();
+  };
+  const double dbT0 = sampleBreak ? sampleNowMs() : 0.0;
   const uint32_t primitive = initiator & 0x3Fu;
   const uint32_t sourceSelect = (initiator >> 6) & 3u;
   const bool wideIndices = ((initiator >> 11) & 1u) != 0;
@@ -656,17 +780,37 @@ bool Gles3Backend::ExecuteDraw(const uint32_t* regs, uint32_t initiator, uint32_
   if (depthOnly && !ps->writesDepth && !ps->usesKill && !alphaTestEnabled) {
     psH = 0;
   }
+  const bool pixelGenEnabled = (psH != 0) && (((regs[kRegProgramControl] >> 18) & 1u) != 0);
+  // Shaders sampling a 24-bit depth buffer (shadow projection masks, shadow depth downsample,
+  // DOF/fog depth reconstruction) need full FP32 highp precision so depth comparisons and
+  // inverse-projection matrices do not quantize/overflow in 10-bit FP16 mediump.
+  bool forceHighp = false;
+  if (psH != 0 && !ps->writesDepth) {
+    for (const XenosGlsl::TextureFetch& fetch : ps->textureFetches) {
+      if (fetch.dimension != 3u) {
+        const uint32_t tAddr = regs[kRegFetchConstants + fetch.slot * 6u + 1u] & 0xFFFFF000u;
+        if (resources_.IsResolvedDepth(tAddr)) {
+          forceHighp = true;
+          break;
+        }
+      }
+    }
+  }
 
   GLuint prog = 0;
   if (lastLinkedProg_ != 0 && lastVsH_ == vsH && lastPsH_ == psH &&
-      lastRectProg_ == rectangles && lastAlphaProg_ == alphaTestEnabled) {
+      lastRectProg_ == rectangles && lastAlphaProg_ == alphaTestEnabled &&
+      lastPixelGenProg_ == pixelGenEnabled && lastHighpProg_ == forceHighp) {
     prog = lastLinkedProg_;
   } else {
-    prog = shaders_.GetLinkedProgram(vsH, psH, rectangles, alphaTestEnabled);
+    prog = shaders_.GetLinkedProgram(vsH, psH, rectangles, alphaTestEnabled, pixelGenEnabled,
+                                     forceHighp);
     lastVsH_ = vsH;
     lastPsH_ = psH;
     lastRectProg_ = rectangles;
     lastAlphaProg_ = alphaTestEnabled;
+    lastPixelGenProg_ = pixelGenEnabled;
+    lastHighpProg_ = forceHighp;
     lastLinkedProg_ = prog;
   }
   if (!prog) return false;
@@ -693,13 +837,14 @@ bool Gles3Backend::ExecuteDraw(const uint32_t* regs, uint32_t initiator, uint32_
   const uint32_t cls = ((surfaceInfo >> 16) & 3u) != 0 ? 1u : 0u;
 
   GLuint colorTex[4] = {};
+  const Gles3Resources::ColorTarget* boundColors[4] = {};
   uint32_t colorCount = 0;
   const Gles3Resources::ColorTarget* primaryColor = nullptr;
   for (uint32_t i = 0; i < 4 && !depthOnly; ++i) {
     if (((ps->colourTargets >> i) & 1u) == 0) continue;
     if (((colorMask >> (i * 4)) & 0xFu) == 0) continue;
     const Gles3Resources::ColorTarget* ct =
-        isRectClear ? resources_.PrimaryColorTargetAt(colorInfos[i], pitch, cls) : nullptr;
+        isRectClear ? resources_.PrimaryColorTargetAt(colorInfos[i], pitch, cls, bottom) : nullptr;
     if (!ct) ct = resources_.ColorTargetFor(colorInfos[i], surfaceInfo);
     if (!ct || !ct->tex) continue;
     bool dup = false;
@@ -708,6 +853,7 @@ bool Gles3Backend::ExecuteDraw(const uint32_t* regs, uint32_t initiator, uint32_
     }
     if (dup) continue;
     colorTex[i] = ct->tex;
+    boundColors[i] = ct;
     colorCount = i + 1;
     if (!primaryColor) primaryColor = ct;
   }
@@ -716,7 +862,7 @@ bool Gles3Backend::ExecuteDraw(const uint32_t* regs, uint32_t initiator, uint32_
   const Gles3Resources::DepthTarget* boundDepth = nullptr;
   if ((depthControl & 3u) != 0) {
     const Gles3Resources::DepthTarget* dt =
-        isRectClear ? resources_.PrimaryDepthTargetAt(depthInfo, pitch, cls) : nullptr;
+        isRectClear ? resources_.PrimaryDepthTargetAt(depthInfo, pitch, cls, bottom) : nullptr;
     if (!dt) dt = resources_.DepthTargetFor(depthInfo, surfaceInfo);
     if (dt && dt->tex) {
       if (!primaryColor || (dt->width == primaryColor->width && dt->height == primaryColor->height)) {
@@ -724,17 +870,46 @@ bool Gles3Backend::ExecuteDraw(const uint32_t* regs, uint32_t initiator, uint32_
         boundDepth = dt;
       }
     }
+  } else if (drawFboBound_ && lastFboDepth_ != 0 && primaryColor &&
+             colorTex[0] == lastFboColor_[0] &&
+             colorTex[1] == lastFboColor_[1] &&
+             colorTex[2] == lastFboColor_[2] &&
+             colorTex[3] == lastFboColor_[3]) {
+    // Keep the existing matching-size depth attachment mounted on drawFbo_ across
+    // depth-disabled draws (GL_DEPTH_TEST and GL_STENCIL_TEST are disabled below),
+    // avoiding two glFramebufferTexture2D + glDrawBuffers GMEM render-pass splits on Adreno!
+    depthTex = lastFboDepth_;
+  }
+  // Keep existing matching-size color attachment(s) mounted across depth/stencil-only draws
+  // (e.g. BioShock's 35+ stencil light-volume draws interleaved inside the main lighting pass!).
+  // effectiveColorMask below forces glColorMaski(0..3, FALSE, FALSE, FALSE, FALSE) when depthOnly,
+  // so zero color bits are written while avoiding ~70 full-screen GMEM tile flushes per frame!
+  if (depthOnly && colorCount == 0 && drawFboBound_ && depthTex != 0 &&
+      lastFboDepth_ == depthTex && lastFboColor_[0] != 0) {
+    for (uint32_t i = 0; i < 4; ++i) {
+      colorTex[i] = lastFboColor_[i];
+      if (colorTex[i]) colorCount = i + 1;
+    }
   }
   if (colorCount == 0 && depthTex == 0) return false;
+  if (!depthOnly) {
+    for (uint32_t i = 0; i < 4; ++i) {
+      if (boundColors[i]) ++boundColors[i]->drawGen;
+    }
+  }
+  if (boundDepth && ((depthControl & 4u) != 0 || (depthControl & 1u) != 0)) {
+    ++boundDepth->drawGen;
+  }
 
   // Flush any deferred 3D refraction resolve the moment a 2D / post-process / Depth-of-Field / UI
   // color draw (!is3DColorDraw, i.e. depth-test disabled) or a color target switch arrives.
-  // Depth/stencil-only draws (colorCount == 0) do not touch colorTex[0], so keep pendingResolve_
+  // Depth/stencil-only draws (depthOnly) do not touch colorTex[0], so keep pendingResolve_
   // deferred across 2-pass depth+color refractive meshes!
-  if (colorCount > 0) {
+  if (!depthOnly && colorCount > 0) {
     const bool is3DColorDraw = ((depthControl & 2u) != 0) && !isRectClear && colorCount == 1u;
     if (pendingResolve_.valid && (!is3DColorDraw || colorTex[0] != pendingResolve_.srcTex)) {
       FlushPendingResolve();
+      sameDestResolveStreak_ = 0u;
     }
     if (!is3DColorDraw) {
       only3DMeshDrawsSinceResolve_ = false;
@@ -799,6 +974,7 @@ bool Gles3Backend::ExecuteDraw(const uint32_t* regs, uint32_t initiator, uint32_
     drawFboBound_ = true;
   }
   if (fboChanged) {
+    if (gpuProfActive_) ++gpuProfFboSwitches_;
     GLenum drawBufs[4] = {GL_NONE, GL_NONE, GL_NONE, GL_NONE};
     for (uint32_t i = 0; i < 4; ++i) {
       UnbindTexturesMatching(colorTex[i]);
@@ -840,18 +1016,20 @@ bool Gles3Backend::ExecuteDraw(const uint32_t* regs, uint32_t initiator, uint32_
 
   // Rasterizer, blend, depth/stencil state (shadow-cached to skip redundant GL driver calls)
   float polyScale = 0.0f, polyOffset = 0.0f;
-  if (polygonal) {
-    if (((suScModeControl >> 11) & 1u) && !cullFront) {
+  if (((suScModeControl >> 11) & 7u) != 0u) {
+    if (polygonal) {
+      if (((suScModeControl >> 11) & 1u) && !cullFront) {
+        polyScale = RegFloat(regs, kRegPolyOffsetFrontScale + 0);
+        polyOffset = RegFloat(regs, kRegPolyOffsetFrontScale + 1);
+      }
+      if (((suScModeControl >> 12) & 1u) && !cullBack && polyScale == 0.0f && polyOffset == 0.0f) {
+        polyScale = RegFloat(regs, kRegPolyOffsetFrontScale + 2);
+        polyOffset = RegFloat(regs, kRegPolyOffsetFrontScale + 3);
+      }
+    } else if ((suScModeControl >> 13) & 1u) {
       polyScale = RegFloat(regs, kRegPolyOffsetFrontScale + 0);
       polyOffset = RegFloat(regs, kRegPolyOffsetFrontScale + 1);
     }
-    if (((suScModeControl >> 12) & 1u) && !cullBack && polyScale == 0.0f && polyOffset == 0.0f) {
-      polyScale = RegFloat(regs, kRegPolyOffsetFrontScale + 2);
-      polyOffset = RegFloat(regs, kRegPolyOffsetFrontScale + 3);
-    }
-  } else if ((suScModeControl >> 13) & 1u) {
-    polyScale = RegFloat(regs, kRegPolyOffsetFrontScale + 0);
-    polyOffset = RegFloat(regs, kRegPolyOffsetFrontScale + 1);
   }
   const float hostSlope = polyScale * (1.0f / 16.0f) * std::max(scaleX, scaleY);
   const float hostUnits = polyOffset * 16777215.0f;
@@ -871,11 +1049,12 @@ bool Gles3Backend::ExecuteDraw(const uint32_t* regs, uint32_t initiator, uint32_
   float blendFactor[4] = {
       RegFloat(regs, kRegBlendRed + 0), RegFloat(regs, kRegBlendRed + 1),
       RegFloat(regs, kRegBlendRed + 2), RegFloat(regs, kRegBlendRed + 3)};
-  if (stateDirty_ || lastColorMask_ != colorMask ||
+  const uint32_t effectiveColorMask = depthOnly ? 0u : colorMask;
+  if (stateDirty_ || lastColorMask_ != effectiveColorMask ||
       std::memcmp(lastBlendCtrl_, blendControls, sizeof(blendControls)) != 0 ||
       std::memcmp(lastBlendFactor_, blendFactor, sizeof(blendFactor)) != 0) {
-    ApplyBlendState(blendControls, colorMask, blendFactor);
-    lastColorMask_ = colorMask;
+    ApplyBlendState(blendControls, effectiveColorMask, blendFactor, stateDirty_);
+    lastColorMask_ = effectiveColorMask;
     std::memcpy(lastBlendCtrl_, blendControls, sizeof(blendControls));
     std::memcpy(lastBlendFactor_, blendFactor, sizeof(blendFactor));
   }
@@ -897,6 +1076,21 @@ bool Gles3Backend::ExecuteDraw(const uint32_t* regs, uint32_t initiator, uint32_
     lastCullBack_ = cullBack;
   }
   stateDirty_ = false;
+
+  // Hardware Variable Rate Shading (Adreno 6xx/7xx):
+  // Keep 1x1 full resolution at <=360p (already 50+ FPS) and on Z-prepass, shadows, bloom,
+  // tonemap, HUD/UI, and cutscenes. At 540p+, apply 2x2 VRS across ALL 3D HDR scene lighting
+  // & water passes (including usesKill/alphaTest draws whose 1x1 silhouettes were already
+  // established by the Z-prepass!).
+  if (glShadingRateFn_) {
+    GLenum wantRate = 0x96A6u;  // 1x1
+    if (!depthOnly && psH != 0 && colorCount >= 1u && primaryColor != nullptr &&
+        primaryColor->internalFormat == GL_RGBA16F && targetW >= 800u && targetH >= 420u &&
+        ((depthControl & 2u) != 0) && !rectangles && !ps->writesDepth) {
+      wantRate = 0x96A9u;  // 2x2
+    }
+    SetShadingRate(wantRate);
+  }
 
   // DrawConstants UBO
   uint32_t vteFlags = regs[kRegVteControl];
@@ -925,22 +1119,46 @@ bool Gles3Backend::ExecuteDraw(const uint32_t* regs, uint32_t initiator, uint32_
   drawConst_.targetSize[2] = 1.0f / static_cast<float>(pitch);
   drawConst_.targetSize[3] = targetH > 0 ? scaleY / static_cast<float>(targetH) : 1.0f / 720.0f;
   drawConst_.flags[0] = vteFlags | (((regs[kRegVertexControl] & 1u) != 0) ? 0x10000u : 0u);
-  drawConst_.flags[1] = ((colorControl >> 3) & 1u) ? (colorControl & 7u) : 7u;
-  drawConst_.flags[2] = regs[kRegAlphaReference];
-  drawConst_.flags[3] = static_cast<uint32_t>(ps->hash);
+  drawConst_.flags[1] = alphaTestEnabled ? (colorControl & 7u) : 7u;
+  drawConst_.flags[2] = alphaTestEnabled ? regs[kRegAlphaReference] : 0u;
+  drawConst_.flags[3] = 0u;
   drawConst_.pixelGen[0] = scaleX > 0.0f ? 1.0f / scaleX : 1.0f;
   drawConst_.pixelGen[1] = scaleY > 0.0f ? 1.0f / scaleY : 1.0f;
-  drawConst_.pixelGen[2] = static_cast<float>((regs[kRegContextMisc] >> 8) & 0xFFu);
-  drawConst_.pixelGen[3] = ((regs[kRegProgramControl] >> 18) & 1u) ? 1.0f : 0.0f;
+  drawConst_.pixelGen[2] =
+      pixelGenEnabled ? static_cast<float>((regs[kRegContextMisc] >> 8) & 0xFFu) : 0.0f;
+  drawConst_.pixelGen[3] = pixelGenEnabled ? 1.0f : 0.0f;
   for (uint32_t i = 0; i < 4; ++i) {
     int32_t eb = static_cast<int32_t>((colorInfos[i] >> 20) & 0x3Fu);
     if (eb >= 32) eb -= 64;
     drawConst_.colorExpBias[i] = (eb == 0) ? 1.0f : std::ldexp(1.0f, eb);
   }
 
-  // Bind textures & fill textureSize/textureAdjustment
+  const double dbT1 = sampleBreak ? sampleNowMs() : 0.0;
+  if (sampleBreak) drawBreak_.setupMs += (dbT1 - dbT0) * 32.0;
+
+  // Bind textures & configure hardware GL_TEXTURE_SWIZZLE_RGBA + texSize/texScale/texBias/texFlags
   const uint32_t curWriteSeq = resources_.CurrentWriteSeq();
   bool drawConstModified = false;
+  auto swizEnum = [](uint32_t sel) -> GLint {
+    switch (sel & 7u) {
+      case 0: return GL_RED;
+      case 1: return GL_GREEN;
+      case 2: return GL_BLUE;
+      case 3: return GL_ALPHA;
+      case 4: return GL_ZERO;
+      default: return GL_ONE;
+    }
+  };
+  auto applyHwSwizzle = [&](uint32_t binding, GLenum target, uint32_t* hwSwizPtr, uint32_t swiz) {
+    if (hwSwizPtr && *hwSwizPtr != swiz) {
+      glActiveTexture(GL_TEXTURE0 + binding);
+      glTexParameteri(target, GL_TEXTURE_SWIZZLE_R, swizEnum(swiz & 7u));
+      glTexParameteri(target, GL_TEXTURE_SWIZZLE_G, swizEnum((swiz >> 3u) & 7u));
+      glTexParameteri(target, GL_TEXTURE_SWIZZLE_B, swizEnum((swiz >> 6u) & 7u));
+      glTexParameteri(target, GL_TEXTURE_SWIZZLE_A, swizEnum((swiz >> 9u) & 7u));
+      *hwSwizPtr = swiz;
+    }
+  };
   auto bindStageTextures = [&](const Gles3Shaders::Stage* st) {
     if (!st) return;
     for (const XenosGlsl::TextureFetch& fetch : st->textureFetches) {
@@ -970,6 +1188,9 @@ bool Gles3Backend::ExecuteDraw(const uint32_t* regs, uint32_t initiator, uint32_
             boundTex_[fetch.binding] = tex;
             boundTexTarget_[fetch.binding] = target;
           }
+          if (tex == sc.tex && sc.hwSwizzlePtr) {
+            applyHwSwizzle(fetch.binding, target, sc.hwSwizzlePtr, sc.swizzle);
+          }
           if (boundSampler_[fetch.binding] != sc.smp) {
             glBindSampler(fetch.binding, sc.smp);
             boundSampler_[fetch.binding] = sc.smp;
@@ -980,8 +1201,11 @@ bool Gles3Backend::ExecuteDraw(const uint32_t* regs, uint32_t initiator, uint32_
 
       uint32_t tw = 1, th = 1;
       bool isCube = false;
+      bool hwSrgb = false;
+      uint32_t* hwSwizPtr = nullptr;
       const Gles3Resources::Resolved* rSurf = nullptr;
-      const GLuint rawTex = resources_.TextureFor(words, tw, th, isCube, rSurf);
+      const GLuint rawTex =
+          resources_.TextureFor(words, tw, th, isCube, rSurf, &hwSrgb, &hwSwizPtr);
       GLuint tex = rawTex;
       // Never sample an attached FBO texture!
       for (uint32_t c = 0; c < 4; ++c) {
@@ -992,6 +1216,10 @@ bool Gles3Backend::ExecuteDraw(const uint32_t* regs, uint32_t initiator, uint32_
       const GLuint texBeforeGuard = tex;
       if (target == GL_TEXTURE_CUBE_MAP && !isCube) tex = resources_.WhiteTextureCube();
       if (target == GL_TEXTURE_2D && isCube) tex = resources_.WhiteTexture2D();
+      if (tex != rawTex) {
+        hwSwizPtr = nullptr;
+        hwSrgb = false;
+      }
 
       // Skybox investigation: log cube-texture fetches and whether the GLES path
       // substituted the 1x1 white fallback (which would make the sky disappear).
@@ -1022,19 +1250,34 @@ bool Gles3Backend::ExecuteDraw(const uint32_t* regs, uint32_t initiator, uint32_
       }
 
       if (fetch.slot < 32) {
-        TexSlotCache& sc = texSlotCache_[fetch.slot];
-        std::memcpy(sc.words, words, 24u);
-        sc.tex = rawTex;
-        sc.smp = smp;
-        sc.isCube = isCube;
-        sc.writeSeq = curWriteSeq;
-        sc.resolveGen = resolveGen_;
-        sc.valid = true;
-
-        drawConst_.texSize[fetch.slot][0] = static_cast<float>(tw);
-        drawConst_.texSize[fetch.slot][1] = static_cast<float>(th);
-        drawConst_.texSize[fetch.slot][2] = tw > 0 ? 1.0f / static_cast<float>(tw) : 1.0f;
-        drawConst_.texSize[fetch.slot][3] = th > 0 ? 1.0f / static_cast<float>(th) : 1.0f;
+        const float ts0 = static_cast<float>(tw);
+        const float ts1 = static_cast<float>(th);
+        const float ts2 = tw > 0 ? 1.0f / ts0 : 1.0f;
+        const float ts3 = th > 0 ? 1.0f / ts1 : 1.0f;
+        if (drawConst_.texSize[fetch.slot][0] != ts0 ||
+            drawConst_.texSize[fetch.slot][1] != ts1) {
+          drawConst_.texSize[fetch.slot][0] = ts0;
+          drawConst_.texSize[fetch.slot][1] = ts1;
+          drawConst_.texSize[fetch.slot][2] = ts2;
+          drawConst_.texSize[fetch.slot][3] = ts3;
+          drawConstModified = true;
+        }
+        // Scale normalized UVs when a resolved texture was padded to Xenos EDRAM tile height
+        // (e.g. BioShock's 320x180 bloom/DOF buffer resolved as 320x184 across 18 ping-pong passes).
+        const uint32_t fetchW = (words[2] & 0x1FFFu) + 1u;
+        const uint32_t fetchH = ((words[2] >> 13) & 0x1FFFu) + 1u;
+        const float uvSx = (rSurf && tw > 0u && fetchW > 0u && fetchW < tw)
+                               ? (static_cast<float>(fetchW) / static_cast<float>(tw))
+                               : 1.0f;
+        const float uvSy = (rSurf && th > 0u && fetchH > 0u && fetchH < th)
+                               ? (static_cast<float>(fetchH) / static_cast<float>(th))
+                               : 1.0f;
+        float* uvDst = &drawConst_.texUvScale[fetch.slot >> 1u][(fetch.slot & 1u) ? 2u : 0u];
+        if (uvDst[0] != uvSx || uvDst[1] != uvSy) {
+          uvDst[0] = uvSx;
+          uvDst[1] = uvSy;
+          drawConstModified = true;
+        }
 
         uint32_t swizzle = (words[3] >> 1) & 0xFFFu;
         const uint32_t origSwizzle = swizzle;
@@ -1065,7 +1308,10 @@ bool Gles3Backend::ExecuteDraw(const uint32_t* regs, uint32_t initiator, uint32_
           }
           swizzle = rep;
         }
-        drawConst_.textureAdjustment[fetch.slot][0] = swizzle;
+        if (hwSwizPtr) {
+          applyHwSwizzle(fetch.binding, target, hwSwizPtr, swizzle);
+        }
+
         const uint32_t rawSigns = (words[0] >> 2) & 0xFFu;
         uint32_t permutedSigns = 0;
         for (uint32_t i = 0; i < 4; ++i) {
@@ -1073,36 +1319,114 @@ bool Gles3Backend::ExecuteDraw(const uint32_t* regs, uint32_t initiator, uint32_
           const uint32_t compSign = origSel < 4u ? ((rawSigns >> (origSel * 2)) & 3u) : 0u;
           permutedSigns |= (compSign << (i * 2));
         }
-        drawConst_.textureAdjustment[fetch.slot][1] = permutedSigns;
         int32_t expAdj = static_cast<int32_t>((words[3] >> 13) & 0x3Fu);
         if (expAdj >= 32) expAdj -= 64;
         // A resolve that used glCopyImageSubData stored its exponent bias and clamp
         // on the resolved texture instead of applying them in a fullscreen pass.
-        // Fold them into the fetch adjustment so sampling sees the same value.
+        // Fold them into texScale/texBias/texFlags so sampling executes in one FMA.
         uint8_t deferredClamp = 0u;
         if (rSurf) {
           expAdj += rSurf->expBias;
           deferredClamp = rSurf->clampMode;
         }
-        if (expAdj == 0) {
-          drawConst_.textureAdjustment[fetch.slot][2] = 0u;
-        } else {
-          const float expScale = std::ldexp(1.0f, expAdj);
-          uint32_t expBits = 0;
-          std::memcpy(&expBits, &expScale, 4);
-          drawConst_.textureAdjustment[fetch.slot][2] = expBits ^ 0x3F800000u;
+        const float expScale = (expAdj == 0) ? 1.0f : std::ldexp(1.0f, expAdj);
+        float newScale[4];
+        float newBias[4];
+        uint32_t newFlags = deferredClamp & 3u;
+        for (uint32_t i = 0; i < 4; ++i) {
+          const uint32_t mode = (permutedSigns >> (i * 2u)) & 3u;
+          const uint32_t sel = (swizzle >> (i * 3u)) & 7u;
+          if (mode == 3u && !hwSrgb) {
+            newFlags |= (4u << i);
+          }
+          if (mode == 2u) {
+            if (!hwSwizPtr && sel == 4u) {
+              newScale[i] = 0.0f;
+              newBias[i] = -expScale;
+            } else {
+              newScale[i] = 2.0f * expScale;
+              newBias[i] = -expScale;
+            }
+          } else {
+            if (!hwSwizPtr && sel == 4u) {
+              newScale[i] = 0.0f;
+              newBias[i] = 0.0f;
+            } else {
+              newScale[i] = expScale;
+              newBias[i] = 0.0f;
+            }
+          }
         }
-        drawConst_.textureAdjustment[fetch.slot][3] = deferredClamp;
-        drawConstModified = true;
+        uint32_t& slotFlags = drawConst_.texFlags[fetch.slot >> 2u][fetch.slot & 3u];
+        if (std::memcmp(drawConst_.texScale[fetch.slot], newScale, 16u) != 0 ||
+            std::memcmp(drawConst_.texBias[fetch.slot], newBias, 16u) != 0 ||
+            slotFlags != newFlags) {
+          std::memcpy(drawConst_.texScale[fetch.slot], newScale, 16u);
+          std::memcpy(drawConst_.texBias[fetch.slot], newBias, 16u);
+          slotFlags = newFlags;
+          drawConstModified = true;
+        }
+
+        TexSlotCache& sc = texSlotCache_[fetch.slot];
+        std::memcpy(sc.words, words, 24u);
+        sc.tex = rawTex;
+        sc.smp = smp;
+        sc.isCube = isCube;
+        sc.swizzle = swizzle;
+        sc.hwSwizzlePtr = hwSwizPtr;
+        sc.writeSeq = curWriteSeq;
+        sc.resolveGen = resolveGen_;
+        sc.valid = true;
       }
     }
   };
   bindStageTextures(vs);
   if (psH) bindStageTextures(ps);
 
+  if (gpuProfActive_) {
+    ++gpuProfPassDraws_;
+    gpuProfPassIndices_ += indexCount;
+    if (rectangles) ++gpuProfPassRects_;
+    if (alphaTestEnabled) ++gpuProfPassAlphaTest_;
+    if (psH && ps->usesKill) ++gpuProfPassShaderKill_;
+    if (lastShadingRate_ != 0x96A6u) ++gpuProfPassVrsDraws_;
+    if (psH) {
+      gpuProfPassLastPs_ = ps->hash;
+      gpuProfPassLastVs_ = vs->hash;
+      const uint32_t glslLen = static_cast<uint32_t>(ps->glslSource.size());
+      if (glslLen > gpuProfPassMaxPsLen_) gpuProfPassMaxPsLen_ = glslLen;
+      for (const XenosGlsl::TextureFetch& fetch : ps->textureFetches) {
+        ++gpuProfPassFetches_;
+        if (fetch.slot < 32u) {
+          const uint32_t fl = drawConst_.texFlags[fetch.slot >> 2u][fetch.slot & 3u];
+          if (fl != 0u) {
+            ++gpuProfPassAdjSlow_;
+            if ((fl & 0x3Cu) != 0u) ++gpuProfPassSrgb_;
+          }
+          if (gpuProfPassDraws_ <= 2u) {
+            const uint32_t fBase = kRegFetchConstants + fetch.slot * 6u;
+            const uint32_t tAddr = regs[fBase + 1] & 0xFFFFF000u;
+            if (const auto* rs = resources_.ResolvedAt(tAddr)) {
+              const uint32_t fW = (regs[fBase + 2] & 0x1FFFu) + 1u;
+              const uint32_t fH = ((regs[fBase + 2] >> 13) & 0x1FFFu) + 1u;
+              GLESLOG("GPU-PROF-TEX: pass=#%02u d=%u slot=%u base=0x%08x fetch=%ux%u rGuest=%ux%u "
+                      "rHost=%ux%u tgt=%ux%u(g=%ux%u) vp=(%.1f,%.1f,%.1f,%.1f) vte=0x%x sc=(%d,%d,%d,%d) rect=%d",
+                      frameResolves_ + 1u, gpuProfPassDraws_, fetch.slot, tAddr, fW, fH,
+                      rs->guestWidth, rs->guestHeight, rs->width, rs->height,
+                      targetW, targetH, boundPitch, boundRows,
+                      drawConst_.viewportScale[0], drawConst_.viewportOffset[0],
+                      drawConst_.viewportScale[1], drawConst_.viewportOffset[1],
+                      vteFlags, sx0, sy0, sx1, sy1, rectangles ? 1 : 0);
+            }
+          }
+        }
+      }
+    }
+  }
+
   // Bathysphere projector cutscene investigation: log the exact GL state of the two
   // passes implicated by the 946-draw dump (see docs/10-STATUS.md). Must run AFTER
-  // bindStageTextures so textureAdjustment[] reflects this draw, not the previous one.
+  // bindStageTextures so texFlags[] reflects this draw, not the previous one.
   {
     static bool loggedFog = false;
     static bool loggedSpot = false;
@@ -1132,14 +1456,17 @@ bool Gles3Backend::ExecuteDraw(const uint32_t* regs, uint32_t initiator, uint32_
         const uint32_t w3 = regs[base + 3];
         const auto* rs = resources_.ResolvedAt(w1 & 0xFFFFF000u);
         GLESLOG("CUTSCENE-DIAG   fetch slot=%u dim=%u base=0x%08x fmt=%u size=%ux%u swizzle=0x%03x "
-                "adj=0x%08x resolved=%u isDepth=%u",
+                "fl=0x%02x resolved=%u isDepth=%u",
                 fetch.slot, fetch.dimension, w1 & 0xFFFFF000u, w1 & 0x3Fu,
                 (w2 & 0x1FFFu) + 1u, ((w2 >> 13) & 0x1FFFu) + 1u, (w3 >> 1) & 0xFFFu,
-                drawConst_.textureAdjustment[fetch.slot][0], rs ? 1u : 0u,
+                drawConst_.texFlags[fetch.slot >> 2u][fetch.slot & 3u], rs ? 1u : 0u,
                 rs && rs->isDepth ? 1u : 0u);
       }
     }
   }
+
+  const double dbT2 = sampleBreak ? sampleNowMs() : 0.0;
+  if (sampleBreak) drawBreak_.texMs += (dbT2 - dbT1) * 32.0;
 
   // Bind vertex SSBOs (Adreno) or cached GL_TEXTURE_BUFFERs (Mali)
   for (const XenosGlsl::VertexFetch& vf : vs->vertexFetches) {
@@ -1191,6 +1518,9 @@ bool Gles3Backend::ExecuteDraw(const uint32_t* regs, uint32_t initiator, uint32_
       }
     }
   }
+
+  const double dbT3 = sampleBreak ? sampleNowMs() : 0.0;
+  if (sampleBreak) drawBreak_.vbMs += (dbT3 - dbT2) * 32.0;
 
   // Upload UBOs (VS floats, PS floats, Bools+Loops, DrawConstants) via a single unsynchronized
   // ring-buffer map per draw (eliminates per-draw Adreno UBO ghosting/renaming stalls).
@@ -1352,10 +1682,15 @@ bool Gles3Backend::ExecuteDraw(const uint32_t* regs, uint32_t initiator, uint32_
     }
   }
 
+  const double dbT4 = sampleBreak ? sampleNowMs() : 0.0;
+  if (sampleBreak) drawBreak_.uboMs += (dbT4 - dbT3) * 32.0;
+
   if (lastProg_ != prog) {
     glUseProgram(prog);
     lastProg_ = prog;
   }
+  const double dbTProg = sampleBreak ? sampleNowMs() : 0.0;
+  if (sampleBreak) drawBreak_.progMs += (dbTProg - dbT4) * 32.0;
 
   const int32_t baseVertex = static_cast<int32_t>(regs[kRegIndexOffset]);
   const bool dmaIndexed = (sourceSelect == 0u && indexBase != 0u);
@@ -1365,6 +1700,12 @@ bool Gles3Backend::ExecuteDraw(const uint32_t* regs, uint32_t initiator, uint32_
       lastPrimRestart_ = false;
     }
     glDrawArrays(glTopo, baseVertex, static_cast<GLsizei>(indexCount));
+    if (sampleBreak) {
+      const double tEnd = sampleNowMs();
+      drawBreak_.glDrawMs += (tEnd - dbTProg) * 32.0;
+      drawBreak_.callMs += (tEnd - dbT4) * 32.0;
+      drawBreak_.arrayDraws += 32u;
+    }
     return true;
   }
 
@@ -1386,12 +1727,20 @@ bool Gles3Backend::ExecuteDraw(const uint32_t* regs, uint32_t initiator, uint32_
         glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, staticEbo);
         lastEbo_ = staticEbo;
       }
+      const double dbTEbo = sampleBreak ? sampleNowMs() : 0.0;
+      if (sampleBreak) drawBreak_.eboMs += (dbTEbo - dbTProg) * 32.0;
       const GLenum idxType = wideIndices ? GL_UNSIGNED_INT : GL_UNSIGNED_SHORT;
       if (baseVertex != 0) {
         glDrawElementsBaseVertex(glTopo, static_cast<GLsizei>(indexCount), idxType, nullptr,
                                  baseVertex);
       } else {
         glDrawElements(glTopo, static_cast<GLsizei>(indexCount), idxType, nullptr);
+      }
+      if (sampleBreak) {
+        const double tEnd = sampleNowMs();
+        drawBreak_.glDrawMs += (tEnd - dbTEbo) * 32.0;
+        drawBreak_.callMs += (tEnd - dbT4) * 32.0;
+        drawBreak_.staticDraws += 32u;
       }
       return true;
     }
@@ -1505,12 +1854,20 @@ bool Gles3Backend::ExecuteDraw(const uint32_t* regs, uint32_t initiator, uint32_
     }
     indexRingOffset_ = (idxOff + idxBytes + 15u) & ~15u;
   }
+  const double dbTFb = sampleBreak ? sampleNowMs() : 0.0;
+  if (sampleBreak) drawBreak_.fbIdxMs += (dbTFb - dbTProg) * 32.0;
   const auto* idxPtr = reinterpret_cast<const void*>(static_cast<uintptr_t>(idxOff));
   if (baseVertex != 0) {
     glDrawElementsBaseVertex(glTopo, static_cast<GLsizei>(drawCount), GL_UNSIGNED_INT, idxPtr,
                              baseVertex);
   } else {
     glDrawElements(glTopo, static_cast<GLsizei>(drawCount), GL_UNSIGNED_INT, idxPtr);
+  }
+  if (sampleBreak) {
+    const double tEnd = sampleNowMs();
+    drawBreak_.glDrawMs += (tEnd - dbTFb) * 32.0;
+    drawBreak_.callMs += (tEnd - dbT4) * 32.0;
+    drawBreak_.fallbackDraws += 32u;
   }
   return true;
 }
@@ -1576,8 +1933,14 @@ bool Gles3Backend::ExecuteResolve(const uint32_t* regs) {
 
   const float hostX0 = static_cast<float>(x0) * scaleX;
   const float hostY0 = static_cast<float>(y0) * scaleY;
-  const uint32_t hostW = std::max(1u, static_cast<uint32_t>(std::lround(width * scaleX)));
-  const uint32_t hostH = std::max(1u, static_cast<uint32_t>(std::lround(height * scaleY)));
+  const int32_t clampedX0 = std::max<int32_t>(0, static_cast<int32_t>(std::lround(hostX0)));
+  const int32_t clampedY0 = std::max<int32_t>(0, static_cast<int32_t>(std::lround(hostY0)));
+  const int32_t clampedX1 = std::min<int32_t>(
+      static_cast<int32_t>(targetW), static_cast<int32_t>(std::lround(static_cast<float>(x1) * scaleX)));
+  const int32_t clampedY1 = std::min<int32_t>(
+      static_cast<int32_t>(targetH), static_cast<int32_t>(std::lround(static_cast<float>(y1) * scaleY)));
+  const uint32_t hostW = static_cast<uint32_t>(std::max<int32_t>(1, clampedX1 - clampedX0));
+  const uint32_t hostH = static_cast<uint32_t>(std::max<int32_t>(1, clampedY1 - clampedY0));
 
   const uint32_t colorInfos[4] = {
       regs[kRegColorInfo0], regs[kRegColorInfo1], regs[kRegColorInfo2], regs[kRegColorInfo3]};
@@ -1586,24 +1949,37 @@ bool Gles3Backend::ExecuteResolve(const uint32_t* regs) {
   // An EDRAM->host resolve only needs to run when the source has been drawn into
   // since the previous resolve with identical parameters. Clears also change the
   // source, so they invalidate the cached key below.
+  const uint32_t drawsBeforeResolve = drawsSinceResolve_;
+  const bool fromDepth = (sourceSelect == 4u);
   ResolveKey key{};
-  key.control = control;
+  // Mask out post-copy clear bits (8..9) so a copy+clear resolve with 0 intervening draws
+  // still matches an immediately preceding copy of the exact same unmodified EDRAM source.
+  key.control = control & ~(3u << 8);
   key.destBase = destBase;
   key.destInfo = destInfo;
   key.surfaceInfo = surfaceInfo;
   key.tl = tl;
   key.br = br;
-  key.depthInfo = depthInfo;
-  key.frontbufferCandidate = (sourceSelect != 4u && width >= 480u && height >= 240u);
-  std::memcpy(key.colorInfo, colorInfos, sizeof(colorInfos));
+  key.depthInfo = fromDepth ? depthInfo : 0u;
+  key.frontbufferCandidate = (!fromDepth && width >= 480u && height >= 240u);
+  if (!fromDepth) {
+    key.colorInfo[0] = colorInfos[sourceSelect < 4u ? sourceSelect : 0u];
+  }
   const bool isCopy = (command != 3u && destBase != 0);
   // Never skip a frontbuffer resolve: SetLastFrontbuffer() and resolved-texture
   // re-creation on guest writes must still run so present cannot show a stale surface.
   const bool skipCopy = isCopy && !key.frontbufferCandidate && drawsSinceResolve_ == 0 &&
                         lastResolveKey_ == key;
-  if (skipCopy) ++resolveStats_.skipped;
+  if (skipCopy) {
+    ++resolveStats_.skipped;
+    if (resolveDumpActive_) {
+      GLESLOG("RES-DUMP: SKIP depth=%d guest=%ux%u base=0x%08x draws=%u clr=%d/%d",
+              fromDepth ? 1 : 0, width, height, destBase, drawsBeforeResolve,
+              colorClear ? 1 : 0, depthClear ? 1 : 0);
+    }
+  }
   lastResolveKey_ = key;
-  lastResolveKey_.valid = isCopy && !colorClear && !depthClear;
+  lastResolveKey_.valid = isCopy && (fromDepth ? !depthClear : !colorClear);
   drawsSinceResolve_ = 0;
   const bool wasOnly3DMeshDraws = only3DMeshDrawsSinceResolve_;
   only3DMeshDrawsSinceResolve_ = true;
@@ -1612,12 +1988,17 @@ bool Gles3Backend::ExecuteResolve(const uint32_t* regs) {
 
   // 1) Copy/resolve RT into GPU resolved texture
   if (!isCopy || skipCopy) {
-    if (colorClear || depthClear) FlushPendingResolve();
+    if (colorClear || depthClear) {
+      FlushPendingResolve();
+      sameDestResolveStreak_ = 0u;
+      lastResolveDestBase_ = 0u;
+      lastColorResolveSrcTex_ = 0u;
+    }
   }
   if (isCopy && !skipCopy) {
-    const bool fromDepth = (sourceSelect == 4u);
     GLuint srcTex = 0;
     uint32_t srcW = 1, srcH = 1;
+    uint64_t srcDrawGen = 0;
     GLenum dstFmt = GL_RGBA8;
     if (fromDepth) {
       const auto* dt = resources_.DepthTargetFor(depthInfo, surfaceInfo);
@@ -1625,6 +2006,7 @@ bool Gles3Backend::ExecuteResolve(const uint32_t* regs) {
         srcTex = dt->tex;
         srcW = dt->width;
         srcH = dt->height;
+        srcDrawGen = dt->drawGen;
         // Match GL_DEPTH24_STENCIL8 so depth resolves use hardware glCopyImageSubData
         // instead of an FBO switch + fullscreen shader pass (5x/frame).
         dstFmt = GL_DEPTH24_STENCIL8;
@@ -1636,6 +2018,7 @@ bool Gles3Backend::ExecuteResolve(const uint32_t* regs) {
         srcTex = ct->tex;
         srcW = ct->width;
         srcH = ct->height;
+        srcDrawGen = ct->drawGen;
         dstFmt = ct->internalFormat;
       }
     }
@@ -1643,11 +2026,17 @@ bool Gles3Backend::ExecuteResolve(const uint32_t* regs) {
     if (srcTex) {
       auto* dst = resources_.ResolvedFor(destBase, hostW, hostH, dstFmt, fromDepth);
       if (dst && dst->tex) {
-        ++resolveGen_;
-        dst->guestWidth = width;
-        dst->guestHeight = height;
+        const uint32_t curWriteSeq = resources_.CurrentWriteSeq();
+        const uint32_t prevGW = dst->guestWidth;
+        const uint32_t prevGH = dst->guestHeight;
+        const bool prevRb = dst->rbSwapped;
+        const int32_t prevExp = dst->expBias;
+        const uint8_t prevClamp = dst->clampMode;
+        const uint32_t prevWriteSeq = dst->lastWriteSeq;
+        dst->guestWidth = (dst->width == hostW) ? width : std::max(dst->guestWidth, width);
+        dst->guestHeight = (dst->height == hostH) ? height : std::max(dst->guestHeight, height);
         dst->rbSwapped = !fromDepth && (((destInfo >> 24) & 1u) != 0);
-        dst->lastWriteSeq = resources_.CurrentWriteSeq();
+        dst->lastWriteSeq = curWriteSeq;
         if (!fromDepth && width >= 480 && height >= 240) {
           resources_.SetLastFrontbuffer(dst);
         }
@@ -1677,34 +2066,142 @@ bool Gles3Backend::ExecuteResolve(const uint32_t* regs) {
             static_cast<uint32_t>(srcX0) + hostW <= srcW &&
             static_cast<uint32_t>(srcY0) + hostH <= srcH;
 
-        // The resolved texture is always allocated with the SOURCE GL format
-        // (dstFmt is taken from ct->internalFormat above), so glCopyImageSubData is
-        // always format-compatible. The exponent bias and clamp the old shader path
-        // applied at resolve time are deferred to sample time via textureAdjustment[]
-        // (see bindStageTextures), which makes scaled resolves eligible for the fast
-        // path too. Frontbuffers are covered as well: ExecutePresent applies the
-        // stored bias via PresentParams::w before its final clamp.
         const bool canDirectCopy = boundsOk;
 
+        // If this exact (srcTex, srcX0, srcY0, hostW, hostH) was ALREADY copied into dst->tex
+        // and srcTex has received zero draws/clears since then (e.g. #49 after 19 bloom draws into
+        // other targets), skip the redundant glCopyImageSubData!
+        const bool sameUnmodifiedSrc =
+            canDirectCopy && prevGW != 0 && dst->lastSrcTex == srcTex &&
+            dst->lastSrcDrawGen == srcDrawGen && dst->lastSrcX0 == srcX0 &&
+            dst->lastSrcY0 == srcY0 && dst->lastHostW == hostW && dst->lastHostH == hostH &&
+            prevWriteSeq == curWriteSeq;
+        if (sameUnmodifiedSrc) {
+          ++resolveStats_.skipped;
+          dst->expBias = fromDepth ? 0 : expBias;
+          dst->clampMode = fromDepth ? 0 : clampModeI;
+          if (dst->guestWidth != prevGW || dst->guestHeight != prevGH ||
+              dst->rbSwapped != prevRb || dst->expBias != prevExp || dst->clampMode != prevClamp) {
+            ++resolveGen_;
+          }
+          didAny = true;
+        } else {
         if (fromDepth) ++resolveStats_.depth;
         else ++resolveStats_.color;
         resolveStats_.pixels += static_cast<uint64_t>(hostW) * hostH;
         ++frameResolves_;
         if (resolveDumpActive_) {
-          GLESLOG("RES-DUMP: #%u depth=%d src=%ux%u dst=%ux%u guest=%ux%u fmt=0x%x base=0x%08x draws=%u direct=%d",
+          GLESLOG("RES-DUMP: #%u depth=%d src=%ux%u dst=%ux%u guest=%ux%u fmt=0x%x base=0x%08x edram=0x%x draws=%u clr=%d/%d direct=%d",
                   frameResolves_, fromDepth ? 1 : 0, srcW, srcH, hostW, hostH, width, height,
-                  dstFmt, destBase, drawsSinceResolve_, canDirectCopy ? 1 : 0);
+                  dstFmt, destBase,
+                  fromDepth ? (depthInfo & 0xFFFu) : (colorInfos[sourceSelect < 4u ? sourceSelect : 0u] & 0xFFFu),
+                  drawsBeforeResolve, colorClear ? 1 : 0, depthClear ? 1 : 0, canDirectCopy ? 1 : 0);
         }
 
         if (canDirectCopy) {
-          ++resolveStats_.directCopy;
           dst->expBias = fromDepth ? 0 : expBias;
           dst->clampMode = fromDepth ? 0 : clampModeI;
-          glCopyImageSubData(srcTex, GL_TEXTURE_2D, 0, srcX0, srcY0, 0,
-                             dst->tex, GL_TEXTURE_2D, 0, 0, 0, 0,
-                             static_cast<GLsizei>(hostW), static_cast<GLsizei>(hostH), 1);
+          dst->lastSrcTex = srcTex;
+          dst->lastSrcDrawGen = srcDrawGen;
+          dst->lastSrcX0 = srcX0;
+          dst->lastSrcY0 = srcY0;
+          dst->lastHostW = hostW;
+          dst->lastHostH = hostH;
+          if (prevGW == 0 || dst->guestWidth != prevGW || dst->guestHeight != prevGH ||
+              dst->rbSwapped != prevRb || dst->expBias != prevExp || dst->clampMode != prevClamp) {
+            ++resolveGen_;
+          }
+          // Consecutive full-screen 3D HDR refraction resolves to the SAME destination texture
+          // (e.g. BioShock's flowing waterstream #19..#29 resolving ed=0x0 -> 0x12c68000 11x/frame):
+          // ALWAYS execute the FIRST resolve (#18, streak == 0) immediately so 0x12c68000 contains
+          // THIS frame's fresh lit opaque scene (zero black/rainbow temporal feedback!), then
+          // coalesce subsequent consecutive full-rect 3D-mesh-only resolves (#19..#29) into a
+          // single copy flushed right before bloom/sub-rect/tonemap!
+          const bool isFullRectColorCopy =
+              !fromDepth && !colorClear && !depthClear &&
+              srcX0 == 0 && srcY0 == 0 && hostW == dst->width && hostH == dst->height;
+          const bool canDeferConsec =
+              isFullRectColorCopy && wasOnly3DMeshDraws &&
+              sameDestResolveStreak_ >= 1u &&
+              destBase == lastResolveDestBase_ &&
+              srcTex == lastColorResolveSrcTex_;
+          if (canDeferConsec) {
+            pendingResolve_.valid = true;
+            pendingResolve_.srcTex = srcTex;
+            pendingResolve_.dstTex = dst->tex;
+            pendingResolve_.destBase = destBase;
+            pendingResolve_.srcX0 = srcX0;
+            pendingResolve_.srcY0 = srcY0;
+            pendingResolve_.hostW = hostW;
+            pendingResolve_.hostH = hostH;
+            ++sameDestResolveStreak_;
+            ++resolveStats_.skipped;
+            didAny = true;
+          } else {
+          FlushPendingResolve();
+          if (isFullRectColorCopy) {
+            lastResolveDestBase_ = destBase;
+            lastColorResolveSrcTex_ = srcTex;
+            sameDestResolveStreak_ = 1u;
+          } else {
+            lastResolveDestBase_ = 0u;
+            lastColorResolveSrcTex_ = 0u;
+            sameDestResolveStreak_ = 0u;
+          }
+          ++resolveStats_.directCopy;
+          if (gpuProfActive_) {
+            using clk = std::chrono::steady_clock;
+            auto nowMs = []() {
+              return std::chrono::duration<double, std::milli>(clk::now().time_since_epoch()).count();
+            };
+            glFinish();
+            const double tBeforeCopy = nowMs();
+            const double drawMs = tBeforeCopy - gpuProfLastStampMs_;
+            glCopyImageSubData(srcTex, GL_TEXTURE_2D, 0, srcX0, srcY0, 0,
+                               dst->tex, GL_TEXTURE_2D, 0, 0, 0, 0,
+                               static_cast<GLsizei>(hostW), static_cast<GLsizei>(hostH), 1);
+            glFinish();
+            const double tAfterCopy = nowMs();
+            const double copyMs = tAfterCopy - tBeforeCopy;
+            gpuProfTotalDrawMs_ += drawMs;
+            gpuProfTotalCopyMs_ += copyMs;
+            gpuProfLastStampMs_ = tAfterCopy;
+            GLESLOG("GPU-PROF: #%02u %s %ux%u(g=%ux%u tl=%u,%u off=0x%x pitch=0x%x) fmt=0x%x base=0x%08x ed=0x%x | draws=%u(rect=%u idx=%u at=%u sk=%u vrs=%u) tex=%u(slow=%u srgb=%u) | drawGpu=%.2fms copyGpu=%.2fms lastPs=%016llx(len=%u)",
+                    frameResolves_, fromDepth ? "D" : "C", hostW, hostH, width, height, x0, y0,
+                    regs[0x2316u], regs[0x2314u], dstFmt, destBase,
+                    fromDepth ? (depthInfo & 0xFFFu) : (colorInfos[sourceSelect < 4u ? sourceSelect : 0u] & 0xFFFu),
+                    gpuProfPassDraws_, gpuProfPassRects_, gpuProfPassIndices_,
+                    gpuProfPassAlphaTest_, gpuProfPassShaderKill_, gpuProfPassVrsDraws_,
+                    gpuProfPassFetches_, gpuProfPassAdjSlow_, gpuProfPassSrgb_,
+                    drawMs, copyMs, static_cast<unsigned long long>(gpuProfPassLastPs_),
+                    gpuProfPassMaxPsLen_);
+            gpuProfPassDraws_ = 0;
+            gpuProfPassIndices_ = 0;
+            gpuProfPassRects_ = 0;
+            gpuProfPassFetches_ = 0;
+            gpuProfPassAdjSlow_ = 0;
+            gpuProfPassSrgb_ = 0;
+            gpuProfPassAlphaTest_ = 0;
+            gpuProfPassShaderKill_ = 0;
+            gpuProfPassVrsDraws_ = 0;
+            gpuProfPassLastPs_ = 0;
+            gpuProfPassLastVs_ = 0;
+            gpuProfPassMaxPsLen_ = 0;
+          } else {
+            glCopyImageSubData(srcTex, GL_TEXTURE_2D, 0, srcX0, srcY0, 0,
+                               dst->tex, GL_TEXTURE_2D, 0, 0, 0, 0,
+                               static_cast<GLsizei>(hostW), static_cast<GLsizei>(hostH), 1);
+          }
           didAny = true;
+          }
         } else {
+          FlushPendingResolve();
+          lastResolveDestBase_ = 0u;
+          lastColorResolveSrcTex_ = 0u;
+          sameDestResolveStreak_ = 0u;
+          SetShadingRate(0x96A6u);
+          ++resolveGen_;
+          dst->lastSrcTex = 0;
           if (fromDepth && dst->internalFormat == GL_DEPTH24_STENCIL8) {
             dst = resources_.ResolvedFor(destBase, hostW, hostH, GL_R32F, true);
             if (!dst || !dst->tex) return false;
@@ -1758,6 +2255,7 @@ bool Gles3Backend::ExecuteResolve(const uint32_t* regs) {
           glDrawArrays(GL_TRIANGLES, 0, 3);
           didAny = true;
         }
+        }
       }
     }
   }
@@ -1793,16 +2291,68 @@ bool Gles3Backend::ExecuteResolve(const uint32_t* regs) {
   if (clearCt && !clearCt->tex) clearCt = nullptr;
   if (clearDt && !clearDt->tex) clearDt = nullptr;
 
-  // Fast in-place clear on drawFbo_ when the target(s) already match the active draw FBO
-  // (avoids splitting Mali's tiled render pass and avoids re-issuing 30+ GL state calls).
-  auto canUseDrawFbo = [&](GLuint wantColor, GLuint wantDepth) -> bool {
-    if (!drawFboBound_) return false;
-    if (lastFboColor_[1] != 0 || lastFboColor_[2] != 0 || lastFboColor_[3] != 0) return false;
-    if (wantColor && lastFboColor_[0] != wantColor) return false;
-    if (wantDepth && lastFboDepth_ != wantDepth) return false;
-    return true;
+  // Bind clear target(s) directly on drawFbo_ instead of switching to resolveFbo_ so the clear
+  // is fused into the start of the upcoming drawFbo_ render pass in Adreno/Mali GMEM (eliminating
+  // standalone clear-pass GMEM->DRAM flushes and DRAM->GMEM reloads).
+  auto bindDrawFboForClear = [&](GLuint wantColor, GLuint wantDepth, bool keepMatchingOther) {
+    if (!drawFboBound_) {
+      glBindFramebuffer(GL_FRAMEBUFFER, drawFbo_);
+      drawFboBound_ = true;
+    }
+    GLuint newColor0 = wantColor;
+    GLuint newDepth = wantDepth;
+    if (keepMatchingOther) {
+      if (!newColor0 && wantDepth && clearDt) {
+        const auto* matchCt = resources_.ColorTargetFor(colorInfos[0], surfaceInfo);
+        if (matchCt && matchCt->tex && matchCt->tex == lastFboColor_[0] &&
+            matchCt->width == clearDt->width && matchCt->height == clearDt->height) {
+          newColor0 = lastFboColor_[0];
+        }
+      }
+      if (!newDepth && wantColor && clearCt) {
+        const auto* matchDt = resources_.DepthTargetFor(depthInfo, surfaceInfo);
+        if (matchDt && matchDt->tex && matchDt->tex == lastFboDepth_ &&
+            matchDt->width == clearCt->width && matchDt->height == clearCt->height) {
+          newDepth = lastFboDepth_;
+        }
+      }
+    }
+    bool colorChanged = (lastFboColor_[0] != newColor0) || (lastFboColor_[1] != 0) ||
+                        (lastFboColor_[2] != 0) || (lastFboColor_[3] != 0);
+    if (colorChanged) {
+      if (lastFboColor_[0] != newColor0) {
+        glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, newColor0, 0);
+        lastFboColor_[0] = newColor0;
+      }
+      for (uint32_t i = 1; i < 4; ++i) {
+        if (lastFboColor_[i] != 0) {
+          glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0 + i, GL_TEXTURE_2D, 0, 0);
+          lastFboColor_[i] = 0;
+        }
+      }
+      const GLenum db[4] = {
+          static_cast<GLenum>(newColor0 ? GL_COLOR_ATTACHMENT0 : GL_NONE),
+          GL_NONE, GL_NONE, GL_NONE};
+      glDrawBuffers(4, db);
+    }
+    if (lastFboDepth_ != newDepth) {
+      glFramebufferTexture2D(GL_FRAMEBUFFER, GL_DEPTH_STENCIL_ATTACHMENT, GL_TEXTURE_2D, newDepth,
+                             0);
+      lastFboDepth_ = newDepth;
+    }
   };
+
   auto setClearScissor = [&]() {
+    // When clearing from the target origin (x0 == 0, y0 == 0), disable scissor test so oversized
+    // padded host targets (e.g. 420x420 for 384x384 shadow, 240x270 for 240x138 bloom) execute a
+    // hardware full-attachment fast-clear in GMEM instead of forcing Adreno to load old DRAM tiles.
+    if (x0 == 0u && y0 == 0u) {
+      if (lastScissorEnabled_) {
+        glDisable(GL_SCISSOR_TEST);
+        lastScissorEnabled_ = false;
+      }
+      return;
+    }
     if (!lastScissorEnabled_) {
       glEnable(GL_SCISSOR_TEST);
       lastScissorEnabled_ = true;
@@ -1820,17 +2370,11 @@ bool Gles3Backend::ExecuteResolve(const uint32_t* regs) {
   };
 
   if (clearCt && clearDt && clearCt->width == clearDt->width && clearCt->height == clearDt->height) {
+    ++clearCt->drawGen;
+    ++clearDt->drawGen;
     UnbindTexturesMatching(clearCt->tex);
     UnbindTexturesMatching(clearDt->tex);
-    if (!canUseDrawFbo(clearCt->tex, clearDt->tex)) {
-      drawFboBound_ = false;
-      glBindFramebuffer(GL_FRAMEBUFFER, resolveFbo_);
-      glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, clearCt->tex, 0);
-      glFramebufferTexture2D(GL_FRAMEBUFFER, GL_DEPTH_STENCIL_ATTACHMENT, GL_TEXTURE_2D,
-                             clearDt->tex, 0);
-      const GLenum db = GL_COLOR_ATTACHMENT0;
-      glDrawBuffers(1, &db);
-    }
+    bindDrawFboForClear(clearCt->tex, clearDt->tex, false);
     setClearScissor();
     glColorMaski(0, GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
     lastColorMask_ = ~0u;
@@ -1847,16 +2391,9 @@ bool Gles3Backend::ExecuteResolve(const uint32_t* regs) {
     didAny = true;
   } else {
     if (clearCt) {
+      ++clearCt->drawGen;
       UnbindTexturesMatching(clearCt->tex);
-      if (!canUseDrawFbo(clearCt->tex, 0)) {
-        drawFboBound_ = false;
-        glBindFramebuffer(GL_FRAMEBUFFER, resolveFbo_);
-        glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, clearCt->tex,
-                               0);
-        glFramebufferTexture2D(GL_FRAMEBUFFER, GL_DEPTH_STENCIL_ATTACHMENT, GL_TEXTURE_2D, 0, 0);
-        const GLenum db = GL_COLOR_ATTACHMENT0;
-        glDrawBuffers(1, &db);
-      }
+      bindDrawFboForClear(clearCt->tex, 0, true);
       setClearScissor();
       glColorMaski(0, GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
       lastColorMask_ = ~0u;
@@ -1868,14 +2405,9 @@ bool Gles3Backend::ExecuteResolve(const uint32_t* regs) {
     }
 
     if (clearDt) {
+      ++clearDt->drawGen;
       UnbindTexturesMatching(clearDt->tex);
-      if (!canUseDrawFbo(0, clearDt->tex)) {
-        drawFboBound_ = false;
-        glBindFramebuffer(GL_FRAMEBUFFER, resolveFbo_);
-        glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, 0, 0);
-        glFramebufferTexture2D(GL_FRAMEBUFFER, GL_DEPTH_STENCIL_ATTACHMENT, GL_TEXTURE_2D,
-                               clearDt->tex, 0);
-      }
+      bindDrawFboForClear(0, clearDt->tex, true);
       setClearScissor();
       glDepthMask(GL_TRUE);
       glStencilMask(0xFFu);
@@ -1895,6 +2427,7 @@ void Gles3Backend::ExecutePresent(uint32_t fbAddr, uint32_t fbWidth, uint32_t fb
                                   bool useLanczos, bool letterbox, bool vsync,
                                   const uint32_t* gammaLut, uint64_t gammaVersion, bool hasGamma) {
   FlushPendingResolve();
+  SetShadingRate(0x96A6u);
   UpdatePendingSurface();
   if (surface_ == EGL_NO_SURFACE) return;
 
@@ -1983,6 +2516,13 @@ void Gles3Backend::ExecutePresent(uint32_t fbAddr, uint32_t fbWidth, uint32_t fb
 
   glActiveTexture(GL_TEXTURE0);
   glBindTexture(GL_TEXTURE_2D, fb->tex);
+  if (fb->hwSwizzle != 0x688u) {
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_SWIZZLE_R, GL_RED);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_SWIZZLE_G, GL_GREEN);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_SWIZZLE_B, GL_BLUE);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_SWIZZLE_A, GL_ALPHA);
+    fb->hwSwizzle = 0x688u;
+  }
   glBindSampler(0, resources_.LinearClampSampler());
   boundTex_[0] = fb->tex;
   boundTexTarget_[0] = GL_TEXTURE_2D;
@@ -2002,9 +2542,25 @@ void Gles3Backend::ExecutePresent(uint32_t fbAddr, uint32_t fbWidth, uint32_t fb
                                                      : shaders_.PresentBilinearProgram();
   glUseProgram(prog);
   glBindVertexArray(emptyVao_);
-  glDrawArrays(GL_TRIANGLES, 0, 3);
-
-  eglSwapBuffers(display_, surface_);
+  if (gpuProfActive_) {
+    using clk = std::chrono::steady_clock;
+    auto nowMs = []() {
+      return std::chrono::duration<double, std::milli>(clk::now().time_since_epoch()).count();
+    };
+    glFinish();
+    const double t0 = nowMs();
+    glDrawArrays(GL_TRIANGLES, 0, 3);
+    glFinish();
+    const double t1 = nowMs();
+    eglSwapBuffers(display_, surface_);
+    const double t2 = nowMs();
+    GLESLOG("GPU-PROF: PRESENT %dx%d (fb=%ux%u lanczos=%d) tailDraw=%.2fms presGpu=%.2fms swap=%.2fms",
+            vpW, vpH, fb->width, fb->height, (useLanczos && !isDownscaling) ? 1 : 0,
+            t0 - gpuProfLastStampMs_, t1 - t0, t2 - t1);
+  } else {
+    glDrawArrays(GL_TRIANGLES, 0, 3);
+    eglSwapBuffers(display_, surface_);
+  }
   g_android_custom_present_count.fetch_add(1, std::memory_order_relaxed);
 }
 

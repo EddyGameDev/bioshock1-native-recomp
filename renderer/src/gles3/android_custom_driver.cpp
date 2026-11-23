@@ -14,6 +14,7 @@
 #include <filesystem>
 #include <thread>
 
+#include <pthread.h>
 #include <sys/resource.h>
 #include <unistd.h>
 
@@ -47,21 +48,6 @@ inline uint32_t SwapGpuEndian(uint32_t v, uint32_t endian) {
 }
 
 }  // namespace
-
-uint32_t CustomXenosGraphicsDriver::DwordReader::ReadSwap() {
-  if (!base || remainingDwords == 0 || capacityDwords == 0) return 0;
-  uint32_t raw = 0;
-  std::memcpy(&raw, base + static_cast<size_t>(readIndex) * 4u, 4);
-  readIndex = (readIndex + 1u) % capacityDwords;
-  --remainingDwords;
-  return ByteSwap32(raw);
-}
-
-void CustomXenosGraphicsDriver::DwordReader::Advance(uint32_t dwords) {
-  const uint32_t skip = std::min(dwords, remainingDwords);
-  if (capacityDwords > 0) readIndex = (readIndex + skip) % capacityDwords;
-  remainingDwords -= skip;
-}
 
 const uint8_t* CustomXenosGraphicsDriver::DwordReader::ContiguousBytes(
     uint32_t dwords, std::vector<uint32_t>& scratch) const {
@@ -138,6 +124,7 @@ rex::Result<void> CustomXenosGraphicsDriver::AttachTitle(const rex::TitleInfo& i
   frameStarted_ = false;
   lastAppliedScale_ = -1.0f;
   lutWritten_ = false;
+  std::memset(shaderLoadCache_, 0, sizeof(shaderLoadCache_));
   lutVersion_ = 0;
 
   if (auto worker = interrupts.StartHostThread(
@@ -361,16 +348,18 @@ void CustomXenosGraphicsDriver::LoadShaderMicrocode(bool pixel, const uint8_t* b
                                                     uint32_t dwords) {
   if (!bytes || dwords == 0 || dwords > 65536u) return;
   shaderWordScratch_.resize(dwords);
+  const auto* src = reinterpret_cast<const uint32_t*>(bytes);
   for (uint32_t i = 0; i < dwords; ++i) {
-    shaderWordScratch_[i] = (static_cast<uint32_t>(bytes[i * 4 + 0]) << 24) |
-                            (static_cast<uint32_t>(bytes[i * 4 + 1]) << 16) |
-                            (static_cast<uint32_t>(bytes[i * 4 + 2]) << 8) | bytes[i * 4 + 3];
+    uint32_t raw = 0;
+    std::memcpy(&raw, src + i, 4);
+    shaderWordScratch_[i] = ByteSwap32(raw);
   }
   const auto h = backend_.Shaders().Intern(shaderWordScratch_.data(), dwords, pixel);
   backend_.Shaders().Select(h, pixel);
 }
 
 void CustomXenosGraphicsDriver::WorkerLoop(std::stop_token stop) {
+  pthread_setname_np(pthread_self(), "BS1-GLES3");
   if (!backend_.EnsureInitialized(memory_, watch_)) {
     GLESERR("Gles3Backend failed to initialize on GPU worker thread!");
     return;
@@ -415,10 +404,12 @@ void CustomXenosGraphicsDriver::WorkerLoop(std::stop_token stop) {
       const auto rs = backend_.GetResolveStats();
       const auto db = backend_.GetDrawBreakdown();
       GLESLOG(
-          "PERF(10s): swaps=%llu batches=%u exec=%.1fms (draw=%.1f/%u[s=%.0f t=%.0f v=%.0f u=%.0f c=%.0f] res=%.1f/%u pres=%.1f wait=%.1f/%u lastWait=0x%X:%X/%X) "
+          "PERF(10s): swaps=%llu batches=%u exec=%.1fms (draw=%.1f/%u[s=%.0f t=%.0f v=%.0f u=%.0f c=%.0f(p=%.0f e=%.0f f=%.0f d=%.0f|st=%u fb=%u ar=%u)] res=%.1f/%u pres=%.1f wait=%.1f/%u lastWait=0x%X:%X/%X) "
           "resolves=(color=%u depth=%u direct=%u skip=%u rej[s=%u c=%u b=%u] px=%llu) shaders=%u/%u tboUp=%u/%u",
           static_cast<unsigned long long>(curFrame - lastFrameIdx), accBatches, accExecMs,
           g_profDrawMs, g_profDraws, db.setupMs, db.texMs, db.vbMs, db.uboMs, db.callMs,
+          db.progMs, db.eboMs, db.fbIdxMs, db.glDrawMs,
+          db.staticDraws, db.fallbackDraws, db.arrayDraws,
           g_profResolveMs, g_profResolves, g_profPresentMs,
           g_profWaitMs, g_profWaits, g_lastWaitAddr, g_lastWaitVal, g_lastWaitRef,
           rs.color, rs.depth, rs.directCopy, rs.skipped, rs.rejectScale, rs.rejectClamp,
@@ -492,6 +483,10 @@ bool CustomXenosGraphicsDriver::ExecuteType0(DwordReader& reader, uint32_t packe
   if (reader.remainingDwords < count) return false;
   const uint32_t baseIndex = packet & 0x7FFFu;
   const bool oneReg = ((packet >> 15) & 1u) != 0;
+  if (!oneReg && baseIndex >= 0x2000u && baseIndex + count <= registers_.size()) {
+    reader.ReadSwapBulk(&registers_[baseIndex], count);
+    return true;
+  }
   for (uint32_t i = 0; i < count; ++i) {
     WriteRegister(oneReg ? baseIndex : (baseIndex + i), reader.ReadSwap());
   }
@@ -626,7 +621,6 @@ bool CustomXenosGraphicsDriver::ExecuteType3(DwordReader& reader, uint32_t packe
     }
 
     case rex::xenos::PM4_WAIT_REG_MEM: {
-      const auto t0 = std::chrono::steady_clock::now();
       const uint32_t waitInfo = reader.ReadSwap();
       const uint32_t pollAddr = reader.ReadSwap();
       const uint32_t ref = reader.ReadSwap();
@@ -636,6 +630,7 @@ bool CustomXenosGraphicsDriver::ExecuteType3(DwordReader& reader, uint32_t packe
       const bool isMem = (waitInfo & 0x10u) != 0;
       const uint32_t fn = waitInfo & 7u;
       uint32_t attempts = 0;
+      std::chrono::steady_clock::time_point t0{};
       while (!stop.stop_requested()) {
         uint32_t val = isMem ? LoadPhysical32GpuSwap(pollAddr & ~3u, pollAddr & 3u)
                              : ReadRegister(pollAddr);
@@ -651,6 +646,7 @@ bool CustomXenosGraphicsDriver::ExecuteType3(DwordReader& reader, uint32_t packe
           case 7: matched = true; break;
         }
         if (matched) break;
+        if (attempts == 0) t0 = std::chrono::steady_clock::now();
         if (attempts == 32) {
           g_lastWaitAddr = pollAddr | (isMem ? 0x80000000u : 0u);
           g_lastWaitVal = val;
@@ -659,8 +655,10 @@ bool CustomXenosGraphicsDriver::ExecuteType3(DwordReader& reader, uint32_t packe
         if (attempts++ < 16) std::this_thread::yield();
         else std::this_thread::sleep_for(std::chrono::microseconds(wait >= 0x100 ? 500 : 100));
       }
-      const auto t1 = std::chrono::steady_clock::now();
-      g_profWaitMs += std::chrono::duration<double, std::milli>(t1 - t0).count();
+      if (attempts > 0) {
+        const auto t1 = std::chrono::steady_clock::now();
+        g_profWaitMs += std::chrono::duration<double, std::milli>(t1 - t0).count();
+      }
       ++g_profWaits;
       return true;
     }
@@ -846,8 +844,23 @@ bool CustomXenosGraphicsDriver::ExecuteType3(DwordReader& reader, uint32_t packe
       const uint32_t addr = addrType & ~3u & kPhysicalMask;
       const uint32_t dwords = startSize & 0xFFFFu;
       if (memory_ && dwords > 0) {
+        const uint32_t slot = ((addr >> 4) ^ (dwords * 2654435761u >> 16) ^ (pixel ? 0xA5u : 0u)) & 255u;
+        ShaderLoadCacheEntry& ce = shaderLoadCache_[slot];
+        if (ce.valid && ce.addr == addr && ce.dwords == dwords && ce.pixel == pixel &&
+            backend_.Resources().CheckRangeClean(addr, dwords * 4u, ce.seq, ce.watchArmed)) {
+          backend_.Shaders().Select(ce.handle, pixel);
+          return true;
+        }
         if (auto span = memory_->GetReadOnlyPhysicalSpan({addr, dwords * 4u})) {
+          ce.watchArmed = false;
+          ce.seq = 0;
+          backend_.Resources().CheckRangeClean(addr, dwords * 4u, ce.seq, ce.watchArmed);
           LoadShaderMicrocode(pixel, reinterpret_cast<const uint8_t*>(span->data()), dwords);
+          ce.addr = addr;
+          ce.dwords = dwords;
+          ce.pixel = pixel;
+          ce.handle = backend_.Shaders().Current(pixel);
+          ce.valid = (ce.handle != 0);
         }
       }
       return true;
@@ -858,8 +871,7 @@ bool CustomXenosGraphicsDriver::ExecuteType3(DwordReader& reader, uint32_t packe
       const uint32_t d1 = reader.ReadSwap();
       const bool pixel = (d0 & 3u) != 0;
       const uint32_t dwords = d1 & 0xFFFFu;
-      std::vector<uint32_t> scratch;
-      if (const uint8_t* ptr = reader.ContiguousBytes(dwords, scratch)) {
+      if (const uint8_t* ptr = reader.ContiguousBytes(dwords, imLoadScratch_)) {
         LoadShaderMicrocode(pixel, ptr, dwords);
       }
       reader.Advance(count > 2 ? count - 2 : 0);
@@ -880,7 +892,13 @@ bool CustomXenosGraphicsDriver::ExecuteType3(DwordReader& reader, uint32_t packe
         reader.Advance(count - 1);
         return true;
       }
-      for (uint32_t i = 0; i < count - 1; ++i) WriteRegister(base + index + i, reader.ReadSwap());
+      const uint32_t n = count - 1u;
+      const uint32_t dst = base + index;
+      if (dst + n <= registers_.size()) {
+        reader.ReadSwapBulk(&registers_[dst], n);
+      } else {
+        for (uint32_t i = 0; i < n; ++i) WriteRegister(dst + i, reader.ReadSwap());
+      }
       return true;
     }
 
@@ -888,7 +906,12 @@ bool CustomXenosGraphicsDriver::ExecuteType3(DwordReader& reader, uint32_t packe
     case rex::xenos::PM4_SET_SHADER_CONSTANTS: {
       const uint32_t offsetType = reader.ReadSwap();
       const uint32_t index = offsetType & 0xFFFFu;
-      for (uint32_t i = 0; i < count - 1; ++i) WriteRegister(index + i, reader.ReadSwap());
+      const uint32_t n = count - 1u;
+      if (index >= 0x2000u && index + n <= registers_.size()) {
+        reader.ReadSwapBulk(&registers_[index], n);
+      } else {
+        for (uint32_t i = 0; i < n; ++i) WriteRegister(index + i, reader.ReadSwap());
+      }
       return true;
     }
 
@@ -909,7 +932,13 @@ bool CustomXenosGraphicsDriver::ExecuteType3(DwordReader& reader, uint32_t packe
       if (memory_ && sizeDwords > 0) {
         if (auto span = memory_->GetReadOnlyPhysicalSpan({addr, sizeDwords * 4u})) {
           const auto* src = reinterpret_cast<const uint32_t*>(span->data());
-          for (uint32_t i = 0; i < sizeDwords; ++i) WriteRegister(base + index + i, ByteSwap32(src[i]));
+          const uint32_t dst = base + index;
+          if (dst + sizeDwords <= registers_.size()) {
+            uint32_t* out = &registers_[dst];
+            for (uint32_t i = 0; i < sizeDwords; ++i) out[i] = ByteSwap32(src[i]);
+          } else {
+            for (uint32_t i = 0; i < sizeDwords; ++i) WriteRegister(dst + i, ByteSwap32(src[i]));
+          }
         }
       }
       return true;

@@ -1,10 +1,28 @@
 # Status — verified facts, not aspirations
 
-Last updated: 2026-11-22 (`v0.0.7.2-experimental` — water/refraction rainbow-flash & vertex-explosion hotfix, startup input latch/headless-XAM fix, Mali TBO & write-watch optimizations, and XAudio2 deadlock fix).
+Last updated: 2026-11-23 (`v0.0.7.6-experimental` — 2×–3× Adreno performance leap, 540p alignment cliff fix, bloom/DOF upward ghosting fix, garbled-weapon & 360p pink-line fixes, stutter-free shader compiler, and bulk PM4/CPU optimizations).
 
-**Open issues — see [`docs/20-KNOWN-ISSUES.md`](20-KNOWN-ISSUES.md)** for remaining items (minor blue speckles on lighthouse facade on Mali, parked Bathysphere projector overlay).
+**Open issues — see [`docs/20-KNOWN-ISSUES.md`](20-KNOWN-ISSUES.md)** for remaining items (dynamic shadow-projector dark boxes on some bodies/props, initial lighting requiring one live RES toggle in-game, minor blue speckles on lighthouse facade on Mali, parked Bathysphere projector overlay).
 
-## `v0.0.7.2-experimental` — current release
+## `v0.0.7.6-experimental` — current release
+
+- **Major Performance Improvements (Adreno 710 verified: 21–22 FPS → 46+ FPS in heavy flowing-water scenes, 73–96 FPS in corridors & interiors):**
+  - **16-Pixel Render Target Alignment (`gles3_resources.cpp`, `gles3_backend.cpp`):** Fixed an Adreno 710 hardware alignment cliff where non-16-aligned target heights (such as `960×540` and `1600×900`) ran >2× slower than `1280×720` due to UBWC/LRZ/GMEM fast-path fallback. Aligning render targets `>= 64px` up to multiples of 16 (`540p` → `960×544`, `900p` → `1600×912`) jumped 540p from **22 FPS → 46+ FPS** in the heavy waterstream scene.
+  - **Safe Hybrid FP16 (`mediump`) Fragment Shaders + Automatic FP32 Depth-Reader Specialization (`xenos_glsl.cpp`, `gles3_shaders.h/.cpp`, `gles3_backend.cpp`, `gles3_resources.h/.cpp`):** Non-depth-writing fragment shaders use clamped FP16 (`kHuge = 65000`, `safeExp2`, `safeRcp`, `safeRsq`, direct `highp p_vN` UV reads, live-input & dead-code pruning, and `BS1_PIXEL_GEN` specialization), while shaders sampling 24-bit depth buffers automatically promote to full FP32 (`BS1_HIGHP`).
+  - **Hardware Variable Rate Shading (`gles3_backend.cpp`):** Enabled `GL_EXT_fragment_shading_rate` (with `KEEP/KEEP` combiner ops and `GL_QCOM_shading_rate` fallback) at `2×2` on 3D HDR `GL_RGBA16F` passes at 540p+, keeping `1×1` crispness on 360p, Z-prepass, shadows, bloom, HUD/UI, and present.
+  - **Safe Consecutive Water Refraction Resolve Coalescing (`gles3_backend.cpp`):** Always executes the first full-rect HDR color resolve immediately (zero rainbow/black feedback) while coalescing redundant consecutive 3D-mesh-only water resolves into a single copy.
+  - **Xenos-Faithful Anisotropic Filtering (`gles3_resources.cpp`):** Honors guest `words[3]` `aniso_filter` bits instead of forcing 4× AF on normal maps, masks, bloom, and UI textures.
+  - **CPU & Driver Throughput (`android_custom_driver.h/.cpp`, `gles3_backend.cpp`, `gles3_resources.h/.cpp`):** Enabled `EGL_KHR_create_context_no_error`, zero-division bulk PM4 constant loads, write-watch-validated 256-entry shader microcode cache, 256-entry L1 VB/IB caches, 4× larger static EBO cache (`4096`), per-RT dirty tracking in `ApplyBlendState`, and removed unused `ps->hash` / `pixelGen` 2 KB UBO re-uploads.
+- **Visual & Stability Fixes:**
+  - **Fixed Upward Blurry Ghosting on Lights, Hands & Weapons (`xenos_glsl.cpp`, `gles3_backend.cpp`):** Added `texUvScale[16]` to `DrawConstants` so normalized UVs scale by `fetchSize / resolvedSize` (fixing BioShock's `320×180` bloom/DOF buffer resolved at Xenos 8-row-aligned `320×184` drifting upward across 18 ping-pong passes at all resolutions).
+  - **Fixed Garbled Weapons on Weapon Switch (`gles3_resources.cpp`):** Stopped updating `vb.fingerprint` and re-arming write-watch before diverting volatile rewrites to the ring buffer; volatile buffers now delete their stale SSBO cleanly.
+  - **Fixed 360p Pink Bottom-Edge Lines (`gles3_backend.cpp`, `gles3_resources.cpp`):** Removed unsafe partial-target `glInvalidateFramebuffer` discards on padded bloom rows and zero-cleared newly created color targets and resolved textures via `ClearColorTextureZero()`.
+  - **Eliminated Shader Compile Stuttering (`gles3_shaders.h/.cpp`):** Removed blocking render-thread disk `open()` probes while shaders are compiling asynchronously (`PrewarmCache()` already preloads all cached `.glesbin` binaries at startup) and moved background shader compilation to 2 low-priority (`nice 10`) threads.
+  - **Protected Smaller EDRAM Targets from Alias Clear Stealing (`gles3_resources.cpp`, `gles3_backend.cpp`):** Guarded `PrimaryColorTargetAt` / `PrimaryDepthTargetAt` so narrow-pitch `DI_PT_RECTLIST` clears only redirect when `clearBottom > target.rows`.
+
+---
+
+## `v0.0.7.2-experimental` — previous release
 
 - **Water / Vita-Chamber Rainbow Flash & Vertex Stretch Hotfix (`gles3_backend.cpp`, `gles3_resources.cpp`):**
   - Removed deferred mid-frame `GL_RGBA16F` refraction resolve coalescing (`pendingResolve_`) and in-place `glInvalidateFramebuffer` calls before `glClear`, which caused feedback-loop `NaN`/rainbow flashing on multi-pass flowing water sheets and Vita-Chamber glass.

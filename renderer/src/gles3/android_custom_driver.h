@@ -3,10 +3,12 @@
 #include "../custom_settings.h"
 #include "gles3_backend.h"
 
+#include <algorithm>
 #include <array>
 #include <atomic>
 #include <condition_variable>
 #include <cstdint>
+#include <cstring>
 #include <mutex>
 #include <stop_token>
 #include <string_view>
@@ -57,8 +59,37 @@ class CustomXenosGraphicsDriver final : public rex::gpu::IXenosGraphicsDriver {
     uint32_t remainingDwords = 0;
 
     bool Empty() const { return remainingDwords == 0; }
-    uint32_t ReadSwap();
-    void Advance(uint32_t dwords);
+    inline uint32_t ReadSwap() {
+      if (!base || remainingDwords == 0 || capacityDwords == 0) return 0;
+      uint32_t raw = 0;
+      std::memcpy(&raw, base + static_cast<size_t>(readIndex) * 4u, 4);
+      if (++readIndex >= capacityDwords) readIndex = 0;
+      --remainingDwords;
+      return __builtin_bswap32(raw);
+    }
+    inline void ReadSwapBulk(uint32_t* dst, uint32_t n) {
+      if (!base || n == 0 || capacityDwords == 0) return;
+      const uint32_t avail = std::min(n, remainingDwords);
+      if (readIndex + avail <= capacityDwords) {
+        const auto* src = reinterpret_cast<const uint32_t*>(base + static_cast<size_t>(readIndex) * 4u);
+        for (uint32_t i = 0; i < avail; ++i) {
+          dst[i] = __builtin_bswap32(src[i]);
+        }
+        readIndex += avail;
+        if (readIndex >= capacityDwords) readIndex = 0;
+        remainingDwords -= avail;
+        return;
+      }
+      for (uint32_t i = 0; i < avail; ++i) dst[i] = ReadSwap();
+    }
+    inline void Advance(uint32_t dwords) {
+      const uint32_t skip = std::min(dwords, remainingDwords);
+      if (capacityDwords > 0) {
+        readIndex += skip;
+        if (readIndex >= capacityDwords) readIndex %= capacityDwords;
+      }
+      remainingDwords -= skip;
+    }
     const uint8_t* ContiguousBytes(uint32_t dwords, std::vector<uint32_t>& scratch) const;
   };
 
@@ -117,6 +148,19 @@ class CustomXenosGraphicsDriver final : public rex::gpu::IXenosGraphicsDriver {
   uint64_t frameIndex_ = 0;
   bool frameStarted_ = false;
   std::vector<uint32_t> shaderWordScratch_;
+  std::vector<uint32_t> imLoadScratch_;
+
+  // Direct-mapped cache for static PM4_IM_LOAD shader microcode (validated via write watch).
+  struct ShaderLoadCacheEntry {
+    uint32_t addr = 0;
+    uint32_t dwords = 0;
+    uint32_t handle = 0;
+    uint32_t seq = 0;
+    bool pixel = false;
+    bool watchArmed = false;
+    bool valid = false;
+  };
+  ShaderLoadCacheEntry shaderLoadCache_[256] = {};
 };
 
 }  // namespace bs1::renderer
