@@ -6,6 +6,17 @@ holds the current snapshot; this file holds the history.
 
 ---
 
+## Session 30 — 2026-11-26 — `v0.0.8.2-experimental` (Stability Update + On-Screen Control Editor)
+
+- **Goal:** ship the post-0.0.7.9 renderer stability patch and add an in-game editor for the touch controls.
+- **Done:** implemented `CUSTOMIZE` HUD pill plus canvas-based editor in `TouchControlsView.kt` (move, resize, opacity, rebind, presets, reset, persistence via `bs1_render_prefs`); `MainActivity.kt` loads/saves the config, suppresses input during editing, and interoperates with `TOUCH: ON/OFF`. Verified on SM-A366B: selection, S+/O-/BIND, drag-to-move, DONE persistence and RESET all work.
+- **Renderer:** kept the uncommitted WIP stability patch (FP32 NaN-safe shaders, DXT byte-swap, EDRAM resolve source selection, UBO invalidation, present-filter fixes, frame dump). All blue-speckle A/B experiments were reverted; the staged `.so` was force-rebuilt after a timestamp issue was found.
+- **Investigation:** established a deterministic 360p CONTINUE → Medical Pavilion A/B route; eliminated VRS, DXT byte-swap, sRGB decode, cubemaps, texture-cache staleness and Lanczos as speckle causes. Documented in `docs/34-STABILITY-PATCH-PLAN.md`.
+- **Release:** versionCode 16 / versionName `0.0.8.2-experimental`; `scripts/verify-all.py` 12/12 PASS. Published as a GitHub experimental release with the debug-signed release APK.
+- **Next action:** resume blue-speckle investigation with per-draw isolation, then implement the remaining compatibility DB entry.
+
+---
+
 ## Session 29 — 2026-11-23 — `v0.0.7.6-experimental` (2×–3× Performance Leap, Bloom Ghosting Fix, Weapon & 360p Fixes, Zero-Stutter Async Shaders)
 
 - **Adreno 710 540p Alignment Cliff Eliminated (`gles3_resources.cpp`, `gles3_backend.cpp`):**

@@ -533,12 +533,10 @@ size_t LinearizeLevel(const uint8_t* src, size_t maxBytes, const GlTexFmt& fmt, 
             continue;
           }
           const uint8_t* s = src + off;
-          if (endian == 1u || endian == 2u) {
-            Swap16Bytes8(d, s);
-            if (fmt.blockBytes == 16u) Swap16Bytes8(d + 8, s + 8);
-          } else {
-            std::memcpy(d, s, fmt.blockBytes);
-          }
+          // Match the working D3D11 path: Xenos DXT/BC4/BC5 blocks are ALWAYS stored
+          // 16-bit byte-swapped regardless of the declared texture endian.
+          Swap16Bytes8(d, s);
+          if (fmt.blockBytes == 16u) Swap16Bytes8(d + 8, s + 8);
         }
       }
       return totalBytes;
@@ -553,12 +551,10 @@ size_t LinearizeLevel(const uint8_t* src, size_t maxBytes, const GlTexFmt& fmt, 
           continue;
         }
         const uint8_t* s = src + off;
-        if (endian == 1u || endian == 2u) {
-          Swap16Bytes8(d, s);
-          if (fmt.blockBytes == 16u) Swap16Bytes8(d + 8, s + 8);
-        } else {
-          std::memcpy(d, s, fmt.blockBytes);
-        }
+        // Match the working D3D11 path: Xenos DXT/BC4/BC5 blocks are ALWAYS stored
+        // 16-bit byte-swapped regardless of the declared texture endian.
+        Swap16Bytes8(d, s);
+        if (fmt.blockBytes == 16u) Swap16Bytes8(d + 8, s + 8);
       }
     }
     return totalBytes;
@@ -1337,6 +1333,24 @@ const Gles3Resources::ColorTarget* Gles3Resources::PrimaryColorTargetAt(uint32_t
   return best;
 }
 
+const Gles3Resources::ColorTarget* Gles3Resources::LatestColorTargetAt(uint32_t colorInfo) const {
+  const uint32_t base = colorInfo & 0xFFFu;
+  const uint32_t rawFmt = (colorInfo >> 16) & 0xFu;
+  const uint32_t canonFmt =
+      (rawFmt == 12u) ? 3u : (rawFmt == 10u) ? 2u : (rawFmt == 1u) ? 0u : rawFmt;
+  const ColorTarget* best = nullptr;
+  for (const auto& [k, ct] : colorTargets_) {
+    if (ct.edramBase != base || !ct.tex || ct.drawGen == 0) continue;
+    if (!best || ct.lastFrame > best->lastFrame ||
+        (ct.lastFrame == best->lastFrame &&
+         ((ct.format == canonFmt) > (best->format == canonFmt) ||
+          ((ct.format == canonFmt) == (best->format == canonFmt) && ct.drawGen > best->drawGen)))) {
+      best = &ct;
+    }
+  }
+  return best;
+}
+
 const Gles3Resources::DepthTarget* Gles3Resources::DepthTargetFor(uint32_t depthInfo,
                                                                   uint32_t surfaceInfo) {
   const uint32_t base = depthInfo & 0xFFFu;
@@ -1403,6 +1417,19 @@ const Gles3Resources::DepthTarget* Gles3Resources::PrimaryDepthTargetAt(uint32_t
     if (dt.msaa == 0u && dt.pitch == expectedPitch) return &dt;
   }
   return nullptr;
+}
+
+const Gles3Resources::DepthTarget* Gles3Resources::LatestDepthTargetAt(uint32_t depthInfo) const {
+  const uint32_t base = depthInfo & 0xFFFu;
+  const DepthTarget* best = nullptr;
+  for (const auto& [k, dt] : depthTargets_) {
+    if (dt.edramBase != base || !dt.tex || dt.drawGen == 0) continue;
+    if (!best || dt.lastFrame > best->lastFrame ||
+        (dt.lastFrame == best->lastFrame && dt.drawGen > best->drawGen)) {
+      best = &dt;
+    }
+  }
+  return best;
 }
 
 Gles3Resources::Resolved* Gles3Resources::ResolvedFor(uint32_t base, uint32_t width,
@@ -1638,6 +1665,13 @@ GLuint Gles3Resources::TextureFor(const uint32_t words[6], uint32_t& widthOut, u
 
   if ((words[0] & 3u) != 2u || baseAddr == 0 || widthOut > 8192u || heightOut > 8192u ||
       dimension == 2u) {
+    if (dimension == 2u && (words[0] & 3u) == 2u && baseAddr != 0) {
+      static std::atomic<uint32_t> s_dim2Logs{0};
+      if (s_dim2Logs.fetch_add(1, std::memory_order_relaxed) < 8u) {
+        GLESLOG("TEX-DIM2 3D texture fetched: base=0x%08x fmt=%u %ux%u w2=0x%08x w5=0x%08x",
+                baseAddr, fmtId, widthOut, heightOut, words[2], words[5]);
+      }
+    }
     return isCubeOut ? whiteTexCube_ : whiteTex2D_;
   }
 

@@ -61,7 +61,7 @@ commercial title, and unknown unknowns dominate.
 
 **Gate:** game is playable in-game with audio, cutscenes, and working Save / Load. ✅
 
-## Phase 5 — Polish and distribution 🔄 (in progress, `v0.0.5-experimental`)
+## Phase 5 — Polish and distribution 🔄 (in progress, `v0.0.8.2-experimental`)
 
 - [x] Full Xbox 360 touch control overlay (dual floating sticks, LT/LB/RT/RB, D-Pad, A/B/X/Y, L3/R3, BACK/START)
 - [x] Live resolution scaling UI (`360p`–`1440p` `RES` pill on Android; **F1**/**F2**/**F4** `360p`–`2160p` on Windows)

@@ -94,10 +94,10 @@ layout(location = 0) out vec4 frag_color;
 
 vec3 applyGamma(vec3 c) {
   if (u_params.x < 0.5) return c;
-  c = clamp(c, 0.0, 1.0);
-  float r = textureLod(u_gamma, vec2(c.r, 0.5), 0.0).r;
-  float g = textureLod(u_gamma, vec2(c.g, 0.5), 0.0).g;
-  float b = textureLod(u_gamma, vec2(c.b, 0.5), 0.0).b;
+  vec3 at = clamp(c, 0.0, 1.0) * (255.0 / 256.0) + (0.5 / 256.0);
+  float r = textureLod(u_gamma, vec2(at.r, 0.5), 0.0).r;
+  float g = textureLod(u_gamma, vec2(at.g, 0.5), 0.0).g;
+  float b = textureLod(u_gamma, vec2(at.b, 0.5), 0.0).b;
   return vec3(r, g, b);
 }
 
@@ -133,10 +133,10 @@ vec4 LanczosWeights(float f) {
 
 vec3 applyGamma(vec3 c) {
   if (u_params.x < 0.5) return c;
-  c = clamp(c, 0.0, 1.0);
-  float r = textureLod(u_gamma, vec2(c.r, 0.5), 0.0).r;
-  float g = textureLod(u_gamma, vec2(c.g, 0.5), 0.0).g;
-  float b = textureLod(u_gamma, vec2(c.b, 0.5), 0.0).b;
+  vec3 at = clamp(c, 0.0, 1.0) * (255.0 / 256.0) + (0.5 / 256.0);
+  float r = textureLod(u_gamma, vec2(at.r, 0.5), 0.0).r;
+  float g = textureLod(u_gamma, vec2(at.g, 0.5), 0.0).g;
+  float b = textureLod(u_gamma, vec2(at.b, 0.5), 0.0).b;
   return vec3(r, g, b);
 }
 
@@ -158,19 +158,25 @@ void main() {
   vec2 t12 = (base + 0.5 + w2 / w12) * inv;
   vec2 t3 = (base + 2.5) * inv;
 
-  vec3 acc = vec3(0.0);
-  acc += textureLod(u_src, vec2(t0.x,  t0.y),  0.0).rgb * (w0.x  * w0.y);
-  acc += textureLod(u_src, vec2(t12.x, t0.y),  0.0).rgb * (w12.x * w0.y);
-  acc += textureLod(u_src, vec2(t3.x,  t0.y),  0.0).rgb * (w3.x  * w0.y);
-  acc += textureLod(u_src, vec2(t0.x,  t12.y), 0.0).rgb * (w0.x  * w12.y);
-  acc += textureLod(u_src, vec2(t12.x, t12.y), 0.0).rgb * (w12.x * w12.y);
-  acc += textureLod(u_src, vec2(t3.x,  t12.y), 0.0).rgb * (w3.x  * w12.y);
-  acc += textureLod(u_src, vec2(t0.x,  t3.y),  0.0).rgb * (w0.x  * w3.y);
-  acc += textureLod(u_src, vec2(t12.x, t3.y),  0.0).rgb * (w12.x * w3.y);
-  acc += textureLod(u_src, vec2(t3.x,  t3.y),  0.0).rgb * (w3.x  * w3.y);
+  vec3 s00 = textureLod(u_src, vec2(t0.x,  t0.y),  0.0).rgb;
+  vec3 s10 = textureLod(u_src, vec2(t12.x, t0.y),  0.0).rgb;
+  vec3 s20 = textureLod(u_src, vec2(t3.x,  t0.y),  0.0).rgb;
+  vec3 s01 = textureLod(u_src, vec2(t0.x,  t12.y), 0.0).rgb;
+  vec3 s11 = textureLod(u_src, vec2(t12.x, t12.y), 0.0).rgb;
+  vec3 s21 = textureLod(u_src, vec2(t3.x,  t12.y), 0.0).rgb;
+  vec3 s02 = textureLod(u_src, vec2(t0.x,  t3.y),  0.0).rgb;
+  vec3 s12 = textureLod(u_src, vec2(t12.x, t3.y),  0.0).rgb;
+  vec3 s22 = textureLod(u_src, vec2(t3.x,  t3.y),  0.0).rgb;
+
+  vec3 acc = s00 * (w0.x  * w0.y)  + s10 * (w12.x * w0.y)  + s20 * (w3.x * w0.y) +
+             s01 * (w0.x  * w12.y) + s11 * (w12.x * w12.y) + s21 * (w3.x * w12.y) +
+             s02 * (w0.x  * w3.y)  + s12 * (w12.x * w3.y)  + s22 * (w3.x * w3.y);
+
+  vec3 mn = min(min(min(s01, s11), min(s21, s10)), s12);
+  vec3 mx = max(max(max(s01, s11), max(s21, s10)), s12);
 
   vec2 sum = w0 + w12 + w3;
-  vec3 c = (acc / (sum.x * sum.y)) * exp2(u_params.w);
+  vec3 c = clamp(acc / (sum.x * sum.y), mn, mx) * exp2(u_params.w);
   c = clamp(c, 0.0, 1.0);
   frag_color = vec4(applyGamma(c), 1.0);
 }

@@ -58,6 +58,9 @@ class MainActivity : Activity() {
     private var liveResBtn: TextView? = null
     private var liveFilterBtn: TextView? = null
     private var liveTouchBtn: TextView? = null
+    private var liveCustomBtn: TextView? = null
+    private var touchConfigJson: String? = null
+    private var editingControls = false
 
     private val prefs by lazy { getSharedPreferences("bs1_render_prefs", MODE_PRIVATE) }
     private val resPresets = listOf("360p", "540p", "720p", "900p", "1080p", "1440p")
@@ -137,6 +140,7 @@ class MainActivity : Activity() {
         upscaleMode = prefs.getString("upscale_mode", "lanczos") ?: "lanczos"
         fxaaEnabled = prefs.getBoolean("fxaa", true)
         perfModeEnabled = prefs.getBoolean("perf_mode", true)
+        touchConfigJson = prefs.getString("touch_config_v1", null)
 
         // Optional ADB test overrides via Intent extras.
         intent?.getStringExtra("driver")?.let { if (it == "custom" || it == "vulkan") driverMode = it }
@@ -573,10 +577,11 @@ class MainActivity : Activity() {
         }
         container.addView(surface)
 
-        val controls = TouchControlsView(this).apply {
+        val controls = TouchControlsView(this, touchConfigJson).apply {
             isFocusable = false
             isFocusableInTouchMode = false
             listener = TouchControlsView.Listener { axes, buttons ->
+                if (editingControls) return@Listener
                 axes.copyInto(touchAxes, 0, 0, minOf(axes.size, touchAxes.size))
                 buttons.copyInto(touchButtons, 0, 0, minOf(buttons.size, touchButtons.size))
                 pushMergedControls()
@@ -643,14 +648,22 @@ class MainActivity : Activity() {
         val touchBtn = makeHudPill("TOUCH: ON").apply {
             setOnClickListener {
                 val nextVisible = touchOverlay?.visibility != View.VISIBLE
+                if (!nextVisible && editingControls) {
+                    exitCustomizeMode()
+                }
                 touchOverlay?.visibility = if (nextVisible) View.VISIBLE else View.GONE
                 text = if (nextVisible) "TOUCH: ON" else "TOUCH: OFF"
             }
         }
+        val customBtn = makeHudPill("CUSTOMIZE").apply {
+            setOnClickListener { toggleCustomizeMode() }
+        }
         liveFilterBtn = filterBtn
         liveTouchBtn = touchBtn
+        liveCustomBtn = customBtn
         hudBar.addView(filterBtn)
         hudBar.addView(touchBtn)
+        hudBar.addView(customBtn)
         container.addView(hudBar)
 
         launcherPanel.visibility = View.GONE
@@ -659,6 +672,36 @@ class MainActivity : Activity() {
         lastPresentCount = 0L
         lastFpsTimeNs = 0L
         hudHandler.postDelayed(fpsRunnable, 1000)
+    }
+
+    private fun toggleCustomizeMode() {
+        val overlay = touchOverlay ?: return
+        if (editingControls) {
+            exitCustomizeMode()
+        } else {
+            editingControls = true
+            touchAxes.fill(0f)
+            touchButtons.fill(0)
+            pushMergedControls()
+            overlay.visibility = View.VISIBLE
+            liveTouchBtn?.text = "TOUCH: ON"
+            liveCustomBtn?.text = "DONE"
+            overlay.editMode = true
+        }
+    }
+
+    private fun exitCustomizeMode() {
+        val overlay = touchOverlay
+        editingControls = false
+        overlay?.editMode = false
+        if (overlay != null) {
+            touchConfigJson = overlay.exportConfig().toString()
+            prefs.edit().putString("touch_config_v1", touchConfigJson).apply()
+        }
+        liveCustomBtn?.text = "CUSTOMIZE"
+        touchAxes.fill(0f)
+        touchButtons.fill(0)
+        pushMergedControls()
     }
 
     companion object {

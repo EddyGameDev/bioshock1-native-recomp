@@ -68,6 +68,8 @@ struct Translator {
   bool usesSafeRcp = false;
   bool usesSafeRsq = false;
   bool usesHuge = false;
+  bool usesMulL = false;
+  bool usesMulL1 = false;
 
   Translator(const std::vector<uint32_t>& w, bool p) : words(w), pixel(p) {}
 
@@ -329,7 +331,7 @@ struct Translator {
     if (needVec) {
       switch (vectorOpcode) {
         case 0:  vector = Format("(%s + %s)", a.c_str(), b.c_str()); break;
-        case 1:  vector = Format("(%s * %s)", a.c_str(), b.c_str()); break;
+        case 1:  usesMulL = true; vector = Format("mulL(%s, %s)", a.c_str(), b.c_str()); break;
         case 2:  vector = Format("max(%s, %s)", a.c_str(), b.c_str()); break;
         case 3:  vector = Format("min(%s, %s)", a.c_str(), b.c_str()); break;
         case 4:  vector = Format("vec4(equal(%s, %s))", a.c_str(), b.c_str()); break;
@@ -339,13 +341,13 @@ struct Translator {
         case 8:  vector = Format("fract(%s)", a.c_str()); break;
         case 9:  vector = Format("trunc(%s)", a.c_str()); break;
         case 10: vector = Format("floor(%s)", a.c_str()); break;
-        case 11: vector = Format("(%s * %s + %s)", a.c_str(), b.c_str(), c.c_str()); break;
+        case 11: usesMulL = true; vector = Format("(mulL(%s, %s) + %s)", a.c_str(), b.c_str(), c.c_str()); break;
         case 12: vector = Format("mix(%s, %s, equal(%s, vec4(0.0)))", c.c_str(), b.c_str(), a.c_str()); break;
         case 13: vector = Format("mix(%s, %s, greaterThanEqual(%s, vec4(0.0)))", c.c_str(), b.c_str(), a.c_str()); break;
         case 14: vector = Format("mix(%s, %s, greaterThan(%s, vec4(0.0)))", c.c_str(), b.c_str(), a.c_str()); break;
-        case 15: vector = Format("vec4(dot(%s, %s))", a.c_str(), b.c_str()); break;
-        case 16: vector = Format("vec4(dot((%s).xyz, (%s).xyz))", a.c_str(), b.c_str()); break;
-        case 17: vector = Format("vec4(dot((%s).xy, (%s).xy) + (%s).x)", a.c_str(), b.c_str(), c.c_str()); break;
+        case 15: usesMulL = true; vector = Format("vec4(dot(mulL(%s, %s), vec4(1.0)))", a.c_str(), b.c_str()); break;
+        case 16: usesMulL = true; vector = Format("vec4(dot(mulL(%s, %s).xyz, vec3(1.0)))", a.c_str(), b.c_str()); break;
+        case 17: usesMulL = true; vector = Format("vec4(dot(mulL(%s, %s).xy, vec2(1.0)) + (%s).x)", a.c_str(), b.c_str(), c.c_str()); break;
         case 18: usesCubeMap = true; vector = Format("cubeMap(%s, %s)", a.c_str(), b.c_str()); break;
         case 19: usesMax4 = true; vector = Format("vec4(max4(%s))", a.c_str()); break;
         case 20:
@@ -407,8 +409,8 @@ struct Translator {
       switch (scalarOpcode) {
         case 0:  scalar = Format("(%s + %s)", sa.c_str(), sb.c_str()); break;
         case 1:  usesPs = true; scalar = Format("(%s + ps)", s1.c_str()); break;
-        case 2:  scalar = Format("(%s * %s)", sa.c_str(), sb.c_str()); break;
-        case 3:  usesPs = true; scalar = Format("(%s * ps)", s1.c_str()); break;
+        case 2:  usesMulL1 = true; scalar = Format("mulL1(%s, %s)", sa.c_str(), sb.c_str()); break;
+        case 3:  usesPs = true; usesMulL1 = true; scalar = Format("mulL1(%s, ps)", s1.c_str()); break;
         case 4:
           usesPs = true;
           usesHuge = true;
@@ -491,7 +493,12 @@ struct Translator {
             other = "(-" + other + ")";
           }
           const char* op = scalarOpcode < 44 ? "*" : scalarOpcode < 46 ? "+" : "-";
-          scalar = Format("(%s %s %s)", constant.c_str(), op, other.c_str());
+          if (scalarOpcode < 44) {
+            usesMulL1 = true;
+            scalar = Format("mulL1(%s, %s)", constant.c_str(), other.c_str());
+          } else {
+            scalar = Format("(%s %s %s)", constant.c_str(), op, other.c_str());
+          }
           break;
         }
         case 48: scalar = Format("sin(%s)", s1.c_str()); break;
@@ -1368,6 +1375,8 @@ struct Translator {
         usesSafeRcp = false;
         usesSafeRsq = false;
         usesHuge = false;
+        usesMulL = false;
+        usesMulL1 = false;
         out.vertexFetches = savedVtxFetches;
         out.textureFetches = savedTexFetches;
         out.writesDepth = savedDepth;
@@ -1521,7 +1530,7 @@ void SetVertexTextureBuffers(bool enabled) { g_vertexTextureBuffers = enabled; }
 bool VertexTextureBuffers() { return g_vertexTextureBuffers; }
 
 uint64_t Version() {
-  static const char* const tag = "bs1-xenos-glsl-es320-v13-uvscale-highpdepth";
+  static const char* const tag = "bs1-xenos-glsl-es320-v14-highp-mull";
   uint64_t hash = 14695981039346656037ULL;
   for (const char* p = tag; *p; ++p) {
     hash ^= static_cast<unsigned char>(*p);
@@ -1540,10 +1549,10 @@ Translation Translate(const std::vector<uint32_t>& words, bool pixel) {
   }
   translator.PackConstants();
 
-  // Safe hybrid FP16 for non-depth-writing fragment shaders (2x ALU + 2x register occupancy on
-  // Adreno 710): UVs & UV-feeder GPRs stay highp FP32; color/lighting/water GPRs & ALU use mediump
-  // FP16 with clamped exp2/rcp/rsq/kHuge so FP16 Inf/NaN is mathematically impossible.
-  const bool useMediump = pixel && !out.writesDepth;
+  // Keep full IEEE FP32 highp in pixel shaders: Unreal Engine 2.5 passes world-space
+  // distances/fog reciprocals (<6.1e-5 or >65504) in pc[] and GPRs that flush to 0 or
+  // overflow to Inf/NaN in FP16 mediump.
+  const bool useMediump = false;
 
   // Analyze which GPRs r[0..31] are actually referenced and whether relative GPR indexing is used.
   const bool hasRelativeGpr = (translator.body.find("r[(") != std::string::npos);
@@ -1678,6 +1687,17 @@ Translation Translate(const std::vector<uint32_t>& words, bool pixel) {
   if (translator.usesBlend1) {
     glsl += "float blend1(bool set, float whenSet, float whenClear) { return set ? whenSet : whenClear; }\n";
   }
+  if (translator.usesMulL) {
+    glsl +=
+        "vec4 mulL(vec4 a, vec4 b) {\n"
+        "    vec4 r = a * b;\n"
+        "    return mix(r, vec4(0.0), bvec4(a.x == 0.0 || b.x == 0.0, a.y == 0.0 || b.y == 0.0,\n"
+        "                                   a.z == 0.0 || b.z == 0.0, a.w == 0.0 || b.w == 0.0));\n"
+        "}\n";
+  }
+  if (translator.usesMulL1) {
+    glsl += "float mulL1(float a, float b) { return (a == 0.0 || b == 0.0) ? 0.0 : (a * b); }\n";
+  }
   if (translator.usesHuge) {
     if (useMediump) {
       glsl += "#ifdef BS1_HIGHP\nconst highp float kHuge = 3.402823466e38;\n#else\nconst highp float kHuge = 65000.0;\n#endif\n";
@@ -1740,16 +1760,15 @@ Translation Translate(const std::vector<uint32_t>& words, bool pixel) {
     glsl +=
         "vec4 textureAdjust(uint slot, vec4 v) {\n"
         "    uint fl = texFlags[slot >> 2u][slot & 3u];\n"
+        "    uint cm = fl & 3u;\n"
+        "    if (cm == 1u) v = clamp(v, 0.0, 1.0);\n"
+        "    else if (cm == 2u) v = clamp(v, -1.0, 1.0);\n"
         "    if ((fl & 0x3Cu) != 0u) {\n"
         "        vec4 a = abs(v);\n"
         "        vec4 lin = a * (a * (a * 0.305306011 + 0.682171111) + 0.012522878);\n"
         "        v = mix(v, lin, bvec4((fl & 4u) != 0u, (fl & 8u) != 0u, (fl & 16u) != 0u, (fl & 32u) != 0u));\n"
         "    }\n"
-        "    vec4 r = v * texScale[slot] + texBias[slot];\n"
-        "    uint cm = fl & 3u;\n"
-        "    if (cm == 1u) r = clamp(r, 0.0, 1.0);\n"
-        "    else if (cm == 2u) r = clamp(r, -1.0, 1.0);\n"
-        "    return r;\n"
+        "    return v * texScale[slot] + texBias[slot];\n"
         "}\n";
   }
 
@@ -1913,7 +1932,10 @@ Translation Translate(const std::vector<uint32_t>& words, bool pixel) {
               "#endif\n",
               i, i, biasLane[i], i, i, biasLane[i]);
         } else {
-          glsl += Format("    frag_c%u = oC%u * colorExpBias.%s;\n", i, i, biasLane[i]);
+          glsl += Format(
+              "    { vec4 outC = oC%u * colorExpBias.%s;\n"
+              "      frag_c%u = mix(outC, vec4(0.0), isnan(outC)); }\n",
+              i, biasLane[i], i);
         }
       }
     }

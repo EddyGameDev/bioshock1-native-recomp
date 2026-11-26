@@ -154,14 +154,6 @@ on in this session.
 ---
 
 ## Build / release status
-- No GitHub release or push made since the user's "do not release until I test"
-  instruction. All fixes below are in local **TEST** APKs only:
-  - `BioShock1-Android-v0.0.6.6-TEST-norestep.apk` (Perf Mode without resolution step-down)
-  - `BioShock1-Android-v0.0.6.6-TEST-dxtswap.apk` (+ DXT byte-swap fix)
-  - `BioShock1-Android-v0.0.6.6-TEST-audio-none-diag.apk` (NONE mode, diagnostics)
-  - `BioShock1-Android-v0.0.6.6-TEST-reopen-diag.apk` (forced reopen — reverted)
-  - `BioShock1-Android-v0.0.6.6-TEST-focus.apk` (audio focus + watchdog)
-  - `BioShock1-Android-v0.0.6.6-TEST-skyreal.apk` (corrected DXT diagnostic)
-- Latest published release remains `v0.0.6.6-audio-load-fix-experimental`.
-- `versionName` in `android/app/build.gradle` is currently
-  `0.0.6.6-audio-load-fix-experimental` (test APKs reuse this version).
+- Latest published release: **`v0.0.8.2-experimental`** (2026-11-26) — stability patch plus on-screen control editor. `versionCode 16` / `versionName 0.0.8.2-experimental` in `android/app/build.gradle`.
+- Blue/cyan speckles on objects and HUD text remain open; see `docs/34-STABILITY-PATCH-PLAN.md` §1b for the deterministic 360p CONTINUE A/B procedure and eliminated causes.
+- Historical local **TEST** APKs (superseded by published releases): `v0.0.6.6-TEST-norestep`, `-dxtswap`, `-audio-none-diag`, `-reopen-diag` (reverted), `-focus`, `-skyreal`.

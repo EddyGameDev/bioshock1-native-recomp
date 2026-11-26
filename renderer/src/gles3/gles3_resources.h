@@ -146,8 +146,10 @@ class Gles3Resources final : public rex::IPhysicalWriteListener {
 
   const ColorTarget* ColorTargetFor(uint32_t colorInfo, uint32_t surfaceInfo);
   const ColorTarget* PrimaryColorTargetAt(uint32_t colorInfo, uint32_t pitch, uint32_t msaa) const;
+  const ColorTarget* LatestColorTargetAt(uint32_t colorInfo) const;
   const DepthTarget* DepthTargetFor(uint32_t depthInfo, uint32_t surfaceInfo);
   const DepthTarget* PrimaryDepthTargetAt(uint32_t depthInfo, uint32_t pitch, uint32_t msaa) const;
+  const DepthTarget* LatestDepthTargetAt(uint32_t depthInfo) const;
 
   Resolved* ResolvedFor(uint32_t base, uint32_t width, uint32_t height, GLenum internalFormat,
                         bool isDepth);

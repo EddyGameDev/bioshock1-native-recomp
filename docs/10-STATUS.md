@@ -1,10 +1,16 @@
 # Status — verified facts, not aspirations
 
-Last updated: 2026-11-23 (`v0.0.7.6-experimental` — 2×–3× Adreno performance leap, 540p alignment cliff fix, bloom/DOF upward ghosting fix, garbled-weapon & 360p pink-line fixes, stutter-free shader compiler, and bulk PM4/CPU optimizations).
+Last updated: 2026-11-26 (`v0.0.8.2-experimental` — stability/correctness patch plus the on-screen control editor; see below).
 
-**Open issues — see [`docs/20-KNOWN-ISSUES.md`](20-KNOWN-ISSUES.md)** for remaining items (dynamic shadow-projector dark boxes on some bodies/props, initial lighting requiring one live RES toggle in-game, minor blue speckles on lighthouse facade on Mali, parked Bathysphere projector overlay).
+**Open issues — see [`docs/20-KNOWN-ISSUES.md`](20-KNOWN-ISSUES.md)** for remaining items (blue/cyan speckles on objects and some HUD text, dynamic shadow-projector dark boxes on some bodies/props, initial lighting requiring one live RES toggle in-game, parked Bathysphere projector overlay). The dynamic shadow boxes and initial lighting issue were fixed in `v0.0.7.9-experimental`; the speckles remain under investigation (`docs/34-STABILITY-PATCH-PLAN.md`).
 
-## `v0.0.7.6-experimental` — current release
+## `v0.0.8.2-experimental` — current release (2026-11-26)
+
+- **On-screen control editor:** new `CUSTOMIZE` HUD pill with in-place move/resize/opacity/rebind, DEFAULT/COMPACT/LEFT/RIGHT presets, reset, and `SharedPreferences` persistence. Gamepad focus and input integrity are preserved. Verified on SM-A366B; see `docs/34-STABILITY-PATCH-PLAN.md` §C3.
+- **Stability / correctness patch carried forward from the post-0.0.7.9 WIP:** full-FP32 NaN-safe pixel shaders (`mulL`/`mulL1`, `isnan` output sanitizing, clamp-before-scale `textureAdjust`), unconditional DXT/BC 16-bit byte-swap to match D3D11, EDRAM copy-resolve source selection via `LatestColorTargetAt`/`LatestDepthTargetAt` + `RB_COPY_DEST_PITCH`, UBO half-swap binding invalidation, gamma half-texel/Lanczos anti-ring clamp, and `bs1_dump.trig` frame-dump diagnostics.
+- **Still open:** blue speckles/HUD text artifacts (VRS, sRGB, DXT byte-swap, cubemaps, texture cache and present filter were A/B-eliminated), `#5`/`#7` device-specific reports, ~30 FPS cap, parked Bathysphere projector overlay.
+
+## `v0.0.7.6-experimental` — previous release
 
 - **Major Performance Improvements (Adreno 710 verified: 21–22 FPS → 46+ FPS in heavy flowing-water scenes, 73–96 FPS in corridors & interiors):**
   - **16-Pixel Render Target Alignment (`gles3_resources.cpp`, `gles3_backend.cpp`):** Fixed an Adreno 710 hardware alignment cliff where non-16-aligned target heights (such as `960×540` and `1600×900`) ran >2× slower than `1280×720` due to UBWC/LRZ/GMEM fast-path fallback. Aligning render targets `>= 64px` up to multiples of 16 (`540p` → `960×544`, `900p` → `1600×912`) jumped 540p from **22 FPS → 46+ FPS** in the heavy waterstream scene.

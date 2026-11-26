@@ -5,7 +5,7 @@ project. Read this before touching any tool.
 
 - **Community & Feedback Discord:** **https://discord.gg/aaDRJQNw8T**
 - **Required Game Version:** **Xbox 360 World Release** (**Title ID: `545407D8`**, **Media ID: `44E704F7`**)
-- **Current Release:** **`v0.0.5-experimental`** (Android APK + Windows standalone zip)
+- **Current Release:** **`v0.0.8.2-experimental`** (Android APK + Windows standalone zip)
 
 ---
 
@@ -32,7 +32,7 @@ in the parent folder:
 
 ---
 
-## Honest status (`v0.0.5-experimental`)
+## Honest status (`v0.0.8.2-experimental`)
 
 Both **Windows** and **Android** builds boot through the real ReXGlue runtime,
 render the title screen, intro cinematic, Bathysphere descent, Andrew Ryan

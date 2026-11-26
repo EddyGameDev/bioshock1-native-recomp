@@ -305,6 +305,8 @@ class Gles3Backend {
   uint32_t gpuProfPassMaxPsLen_ = 0;
   uint32_t gpuProfFboSwitches_ = 0;
   bool sampleDrawBreak_ = false;
+  void* diagFile_ = nullptr;
+  uint32_t diagDrawIdx_ = 0;
 };
 
 }  // namespace bs1::renderer::gles3

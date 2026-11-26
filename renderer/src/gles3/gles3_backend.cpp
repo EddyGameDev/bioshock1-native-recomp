@@ -5,7 +5,9 @@
 #include <algorithm>
 #include <chrono>
 #include <cmath>
+#include <cstdio>
 #include <cstring>
+#include <unistd.h>
 
 #include "bs1_filelog.h"
 #define GLESLOG(...) BS1_GLES_LOG_IMPL(ANDROID_LOG_INFO, __VA_ARGS__)
@@ -63,6 +65,7 @@ constexpr uint32_t kRegBlendControl3 = 0x220B;
 constexpr uint32_t kRegVertexControl = 0x2302;
 constexpr uint32_t kRegCopyControl = 0x2318;
 constexpr uint32_t kRegCopyDestBase = 0x2319;
+constexpr uint32_t kRegCopyDestPitch = 0x231A;
 constexpr uint32_t kRegCopyDestInfo = 0x231B;
 constexpr uint32_t kRegCopyDepthClear = 0x231D;
 constexpr uint32_t kRegCopyColorClear = 0x231E;
@@ -509,6 +512,24 @@ bool Gles3Backend::BeginFrame(uint64_t frame) {
   pendingResolve_.valid = false;
   SetShadingRate(0x96A6u);
   std::memset(boundVbTex_, 0, sizeof(boundVbTex_));
+  if (diagFile_) {
+    std::fclose(static_cast<FILE*>(diagFile_));
+    diagFile_ = nullptr;
+  }
+  if ((frame % 30u) == 0u) {
+    static constexpr const char* kTrigPath = "/sdcard/Android/data/com.bioshock1.recomp/files/bs1_dump.trig";
+    static constexpr const char* kOutPath = "/sdcard/Android/data/com.bioshock1.recomp/files/bs1_frame.txt";
+    if (access(kTrigPath, F_OK) == 0) {
+      unlink(kTrigPath);
+      FILE* fp = std::fopen(kOutPath, "w");
+      if (fp) {
+        diagFile_ = fp;
+        diagDrawIdx_ = 0;
+        std::fprintf(fp, "=== BS1-FRAME-DUMP frame=%llu ===\n",
+                     static_cast<unsigned long long>(frame));
+      }
+    }
+  }
   if ((frame & 127u) == 0u) {
     // Match textures_ periodic eviction cadence so TexSlotCache::hwSwizzlePtr can never dangle.
     ++resolveGen_;
@@ -786,10 +807,14 @@ bool Gles3Backend::ExecuteDraw(const uint32_t* regs, uint32_t initiator, uint32_
   }
   const bool pixelGenEnabled = (psH != 0) && (((regs[kRegProgramControl] >> 18) & 1u) != 0);
   // Shaders sampling a 24-bit depth buffer (shadow projection masks, shadow depth downsample,
-  // DOF/fog depth reconstruction) need full FP32 highp precision so depth comparisons and
-  // inverse-projection matrices do not quantize/overflow in 10-bit FP16 mediump.
-  bool forceHighp = false;
-  if (psH != 0 && !ps->writesDepth) {
+  // DOF/fog depth reconstruction) or rendering blended sky/volumetric fog/particles need full
+  // FP32 highp precision so depth comparisons, inverse-projection matrices, and smooth fog/sky
+  // gradients do not quantize or band in 10-bit FP16 mediump.
+  const uint32_t bc0 = regs[kRegBlendControl0];
+  const bool isAlphaBlended = (bc0 == 0x07060706u || bc0 == 0x01060106u || bc0 == 0x07010701u);
+  const bool isDepthWriteOff = ((regs[kRegDepthControl] & 4u) == 0u);
+  bool forceHighp = (psH != 0 && !ps->writesDepth && isAlphaBlended && isDepthWriteOff);
+  if (psH != 0 && !ps->writesDepth && !forceHighp) {
     for (const XenosGlsl::TextureFetch& fetch : ps->textureFetches) {
       if (fetch.dimension != 3u) {
         const uint32_t tAddr = regs[kRegFetchConstants + fetch.slot * 6u + 1u] & 0xFFFFF000u;
@@ -1186,20 +1211,22 @@ bool Gles3Backend::ExecuteDraw(const uint32_t* regs, uint32_t initiator, uint32_
           if (tex && tex == depthTex) tex = resources_.WhiteTexture2D();
           if (target == GL_TEXTURE_CUBE_MAP && !sc.isCube) tex = resources_.WhiteTextureCube();
           if (target == GL_TEXTURE_2D && sc.isCube) tex = resources_.WhiteTexture2D();
-          if (boundTex_[fetch.binding] != tex || boundTexTarget_[fetch.binding] != target) {
-            glActiveTexture(GL_TEXTURE0 + fetch.binding);
-            glBindTexture(target, tex);
-            boundTex_[fetch.binding] = tex;
-            boundTexTarget_[fetch.binding] = target;
+          if (tex == sc.tex) {
+            if (boundTex_[fetch.binding] != tex || boundTexTarget_[fetch.binding] != target) {
+              glActiveTexture(GL_TEXTURE0 + fetch.binding);
+              glBindTexture(target, tex);
+              boundTex_[fetch.binding] = tex;
+              boundTexTarget_[fetch.binding] = target;
+            }
+            if (sc.hwSwizzlePtr) {
+              applyHwSwizzle(fetch.binding, target, sc.hwSwizzlePtr, sc.swizzle);
+            }
+            if (boundSampler_[fetch.binding] != sc.smp) {
+              glBindSampler(fetch.binding, sc.smp);
+              boundSampler_[fetch.binding] = sc.smp;
+            }
+            continue;
           }
-          if (tex == sc.tex && sc.hwSwizzlePtr) {
-            applyHwSwizzle(fetch.binding, target, sc.hwSwizzlePtr, sc.swizzle);
-          }
-          if (boundSampler_[fetch.binding] != sc.smp) {
-            glBindSampler(fetch.binding, sc.smp);
-            boundSampler_[fetch.binding] = sc.smp;
-          }
-          continue;
         }
       }
 
@@ -1469,6 +1496,54 @@ bool Gles3Backend::ExecuteDraw(const uint32_t* regs, uint32_t initiator, uint32_
     }
   }
 
+  if (diagFile_) {
+    FILE* fp = static_cast<FILE*>(diagFile_);
+    ++diagDrawIdx_;
+    std::fprintf(
+        fp,
+        "DRAW #%u prim=%u idx=%u rect=%d ci0=0x%x(fmt=0x%x) bc0=0x%08x dc=0x%08x st=%08x cm=0x%x "
+        "vte=0x%x dOnly=%d vs=%016llx ps=%016llx\n",
+        diagDrawIdx_, primitive, indexCount, rectangles ? 1 : 0, colorInfos[0],
+        primaryColor ? static_cast<unsigned>(primaryColor->internalFormat) : 0u,
+        blendControls[0], depthControl, stencilRef, colorMask, vteFlags, depthOnly ? 1 : 0,
+        static_cast<unsigned long long>(vs->hash),
+        static_cast<unsigned long long>(psH ? ps->hash : 0ull));
+    if (psH) {
+      for (const XenosGlsl::TextureFetch& fetch : ps->textureFetches) {
+        if (fetch.slot >= 32u) continue;
+        const uint32_t fb = kRegFetchConstants + fetch.slot * 6u;
+        const uint32_t w0 = regs[fb + 0];
+        const uint32_t w1 = regs[fb + 1];
+        const uint32_t w2 = regs[fb + 2];
+        const uint32_t w3 = regs[fb + 3];
+        const uint32_t w5 = regs[fb + 5];
+        const auto* rs = resources_.ResolvedAt(w1 & 0xFFFFF000u);
+        std::fprintf(
+            fp,
+            "  TEX s=%u dim=%u/%u base=0x%08x fmt=%u %ux%u sw=0x%03x sgn=0x%02x res=%d isD=%d "
+            "sc=(%.3f,%.3f,%.3f,%.3f) bi=(%.2f,%.2f,%.2f,%.2f) fl=0x%x\n",
+            fetch.slot, fetch.dimension, (w5 >> 9) & 3u, w1 & 0xFFFFF000u, w1 & 0x3Fu,
+            (w2 & 0x1FFFu) + 1u, ((w2 >> 13) & 0x1FFFu) + 1u, (w3 >> 1) & 0xFFFu,
+            (w0 >> 2) & 0xFFu, rs ? 1 : 0, (rs && rs->isDepth) ? 1 : 0,
+            drawConst_.texScale[fetch.slot][0], drawConst_.texScale[fetch.slot][1],
+            drawConst_.texScale[fetch.slot][2], drawConst_.texScale[fetch.slot][3],
+            drawConst_.texBias[fetch.slot][0], drawConst_.texBias[fetch.slot][1],
+            drawConst_.texBias[fetch.slot][2], drawConst_.texBias[fetch.slot][3],
+            drawConst_.texFlags[fetch.slot >> 2u][fetch.slot & 3u]);
+      }
+      // Dump first 6 mapped PS float constants for blended / post-process / depth-sampling passes
+      if (blendControls[0] != 0x00010001u || rectangles) {
+        const size_t n = ps->constantMap.empty() ? 8u : std::min<size_t>(ps->constantMap.size(), 8u);
+        for (size_t ci = 0; ci < n; ++ci) {
+          const uint32_t regIdx = ps->constantMap.empty() ? static_cast<uint32_t>(ci) : ps->constantMap[ci];
+          const float* fv = reinterpret_cast<const float*>(&regs[kRegPixelConstants + regIdx * 4u]);
+          std::fprintf(fp, "  PC[%u]=(%.4g,%.4g,%.4g,%.4g)", regIdx, fv[0], fv[1], fv[2], fv[3]);
+        }
+        if (n > 0) std::fprintf(fp, "\n");
+      }
+    }
+  }
+
   const double dbT2 = sampleBreak ? sampleNowMs() : 0.0;
   if (sampleBreak) drawBreak_.texMs += (dbT2 - dbT1) * 32.0;
 
@@ -1595,6 +1670,12 @@ bool Gles3Backend::ExecuteDraw(const uint32_t* regs, uint32_t initiator, uint32_
         uboHalfFence_[uboHalf_] = nullptr;
       }
       uboRingOffset_ = uboHalf_ ? halfSize : 0u;
+      // Re-upload all UBO bindings into the fresh half so unchanged bindings (e.g. BoolConstants)
+      // never remain pointed at offsets inside the half now being overwritten.
+      vsDirty = true;
+      psDirty = (psH != 0);
+      boolsDirty = true;
+      drawDirty = true;
     }
   } else if (uboRingOffset_ + worstBytes > uboRingSize_) {
     glBindBuffer(GL_UNIFORM_BUFFER, uboRing_);
@@ -1892,6 +1973,10 @@ void Gles3Backend::UploadUboPresent(const PresentParamsCpu& pp) {
         uboHalfFence_[uboHalf_] = nullptr;
       }
       uboRingOffset_ = uboHalf_ ? halfSize : 0u;
+      vsFloatsValid_ = false;
+      psFloatsValid_ = false;
+      boolsValid_ = false;
+      drawConstValid_ = false;
     }
     const size_t off = uboRingOffset_;
     std::memcpy(uboRingPtr_ + off, &pp, sizeof(pp));
@@ -1909,35 +1994,115 @@ void Gles3Backend::UploadUboPresent(const PresentParamsCpu& pp) {
 bool Gles3Backend::ExecuteResolve(const uint32_t* regs) {
   const uint32_t control = regs[kRegCopyControl];
   const uint32_t destBase = regs[kRegCopyDestBase];
+  const uint32_t destPitchReg = regs[kRegCopyDestPitch];
   const uint32_t destInfo = regs[kRegCopyDestInfo];
   const uint32_t surfaceInfo = regs[kRegSurfaceInfo];
   const uint32_t pitch = surfaceInfo & 0x3FFFu;
   if (pitch == 0) return false;
+
+  const uint32_t copyDestPitch = destPitchReg & 0x3FFFu;
+  const uint32_t copyDestHeight = (destPitchReg >> 16) & 0x3FFFu;
 
   const uint32_t tl = regs[kRegScissorTopLeft];
   const uint32_t br = regs[kRegScissorBottomRight];
   const uint32_t x0 = tl & 0x7FFFu;
   const uint32_t y0 = (tl >> 16) & 0x7FFFu;
   uint32_t x1 = br & 0x7FFFu;
-  const uint32_t y1 = (br >> 16) & 0x7FFFu;
+  uint32_t y1 = (br >> 16) & 0x7FFFu;
   if (x1 > pitch) x1 = pitch;
   if (x1 <= x0 || y1 <= y0 || x1 - x0 > 4096 || y1 - y0 > 4096) return false;
 
-  const uint32_t width = x1 - x0;
-  const uint32_t height = y1 - y0;
   const uint32_t sourceSelect = control & 7u;
   const uint32_t command = (control >> 20) & 3u;
   const bool colorClear = ((control >> 8) & 1u) != 0;
   const bool depthClear = ((control >> 9) & 1u) != 0;
+  const bool fromDepth = (sourceSelect == 4u);
+  const bool isCopy = (command != 3u && destBase != 0);
 
-  if (resources_.EnsureRows(surfaceInfo, y1)) {
+  const uint32_t colorInfos[4] = {
+      regs[kRegColorInfo0], regs[kRegColorInfo1], regs[kRegColorInfo2], regs[kRegColorInfo3]};
+  const uint32_t depthInfo = regs[kRegDepthInfo];
+
+  // Look up the EDRAM source target. If the game already restored RB_SURFACE_INFO /
+  // PA_SC_WINDOW_SCISSOR to 1280x720 before issuing a smaller resolve (e.g. BioShock's
+  // 128x128 spotlight shadow depth resolves #11/#12 at ed=0x5a0/0x5b0 where RB_COPY_DEST_PITCH
+  // is 128x128), prefer the most recently rendered target at that EDRAM base over creating
+  // an empty dummy target at the restored 1280x720 surfaceInfo.
+  const Gles3Resources::DepthTarget* srcDt = nullptr;
+  const Gles3Resources::ColorTarget* srcCt = nullptr;
+  if (isCopy) {
+    if (fromDepth) {
+      const auto* latestDt = resources_.LatestDepthTargetAt(depthInfo);
+      if (latestDt && latestDt->pitch != pitch &&
+          ((copyDestPitch > 0u && copyDestPitch <= latestDt->pitch) || latestDt->drawGen > 0)) {
+        const auto* exactDt = resources_.DepthTargetFor(depthInfo, surfaceInfo);
+        if (!exactDt || exactDt->drawGen == 0 ||
+            (copyDestPitch > 0u && copyDestPitch <= latestDt->pitch && copyDestPitch < pitch)) {
+          srcDt = latestDt;
+        } else {
+          srcDt = exactDt;
+        }
+      } else {
+        srcDt = resources_.DepthTargetFor(depthInfo, surfaceInfo);
+      }
+    } else {
+      const uint32_t info = colorInfos[sourceSelect < 4u ? sourceSelect : 0u];
+      const auto* latestCt = resources_.LatestColorTargetAt(info);
+      if (latestCt && latestCt->pitch != pitch &&
+          ((copyDestPitch > 0u && copyDestPitch <= latestCt->pitch) || latestCt->drawGen > 0)) {
+        const auto* exactCt = resources_.ColorTargetFor(info, surfaceInfo);
+        if (!exactCt || exactCt->drawGen == 0 ||
+            (copyDestPitch > 0u && copyDestPitch <= latestCt->pitch && copyDestPitch < pitch)) {
+          srcCt = latestCt;
+        } else {
+          srcCt = exactCt;
+        }
+      } else {
+        srcCt = resources_.ColorTargetFor(info, surfaceInfo);
+      }
+    }
+  }
+
+  const uint32_t effPitch =
+      (srcDt && srcDt->pitch > 0) ? srcDt->pitch : ((srcCt && srcCt->pitch > 0) ? srcCt->pitch : pitch);
+  const uint32_t effMsaa =
+      (srcDt && srcDt->pitch > 0) ? srcDt->msaa : ((srcCt && srcCt->pitch > 0) ? srcCt->msaa : ((surfaceInfo >> 16) & 3u));
+  const uint32_t effSurfInfo = (effPitch & 0x3FFFu) | ((effMsaa & 3u) << 16);
+
+  if (x1 > effPitch) x1 = effPitch;
+  if (copyDestPitch > 0u && x0 + copyDestPitch < x1) x1 = x0 + copyDestPitch;
+  if (copyDestHeight > 0u && y0 + copyDestHeight < y1) y1 = y0 + copyDestHeight;
+  if (srcDt && srcDt->rows > 0u && y1 > srcDt->rows) y1 = srcDt->rows;
+  if (srcCt && srcCt->rows > 0u && y1 > srcCt->rows) y1 = srcCt->rows;
+  if (x1 <= x0 || y1 <= y0) return false;
+
+  const uint32_t width = x1 - x0;
+  const uint32_t height = y1 - y0;
+
+  if (effSurfInfo == surfaceInfo && resources_.EnsureRows(surfaceInfo, y1)) {
     for (uint32_t i = 0; i < 4; ++i) lastFboColor_[i] = 0;
     lastFboDepth_ = 0;
     drawFboBound_ = false;
+    if (isCopy) {
+      if (fromDepth) srcDt = resources_.DepthTargetFor(depthInfo, surfaceInfo);
+      else srcCt = resources_.ColorTargetFor(colorInfos[sourceSelect < 4u ? sourceSelect : 0u], surfaceInfo);
+    }
   }
   uint32_t targetW = 0, targetH = 0;
   float scaleX = 1.0f, scaleY = 1.0f;
-  resources_.TargetSize(surfaceInfo, 4, targetW, targetH, scaleX, scaleY);
+  if (srcDt && srcDt->width > 0 && srcDt->height > 0 && srcDt->pitch > 0 && srcDt->rows > 0) {
+    targetW = srcDt->width;
+    targetH = srcDt->height;
+    scaleX = static_cast<float>(targetW) / static_cast<float>(srcDt->pitch);
+    scaleY = static_cast<float>(targetH) / static_cast<float>(srcDt->rows);
+  } else if (srcCt && srcCt->width > 0 && srcCt->height > 0 && srcCt->pitch > 0 && srcCt->rows > 0) {
+    targetW = srcCt->width;
+    targetH = srcCt->height;
+    scaleX = static_cast<float>(targetW) / static_cast<float>(srcCt->pitch);
+    scaleY = static_cast<float>(targetH) / static_cast<float>(srcCt->rows);
+  } else {
+    resources_.TargetSize(effSurfInfo, 4, targetW, targetH, scaleX, scaleY);
+  }
 
   const float hostX0 = static_cast<float>(x0) * scaleX;
   const float hostY0 = static_cast<float>(y0) * scaleY;
@@ -1950,30 +2115,35 @@ bool Gles3Backend::ExecuteResolve(const uint32_t* regs) {
   const uint32_t hostW = static_cast<uint32_t>(std::max<int32_t>(1, clampedX1 - clampedX0));
   const uint32_t hostH = static_cast<uint32_t>(std::max<int32_t>(1, clampedY1 - clampedY0));
 
-  const uint32_t colorInfos[4] = {
-      regs[kRegColorInfo0], regs[kRegColorInfo1], regs[kRegColorInfo2], regs[kRegColorInfo3]};
-  const uint32_t depthInfo = regs[kRegDepthInfo];
+  const uint32_t fullGuestW = (copyDestPitch >= width && copyDestPitch <= 4096u) ? copyDestPitch : width;
+  const uint32_t fullGuestH = (copyDestHeight >= height && copyDestHeight <= 4096u) ? copyDestHeight : height;
+  const uint32_t fullHostW =
+      (fullGuestW > width)
+          ? std::max<uint32_t>(hostW, static_cast<uint32_t>(std::lround(static_cast<float>(fullGuestW) * scaleX)))
+          : hostW;
+  const uint32_t fullHostH =
+      (fullGuestH > height)
+          ? std::max<uint32_t>(hostH, static_cast<uint32_t>(std::lround(static_cast<float>(fullGuestH) * scaleY)))
+          : hostH;
 
   // An EDRAM->host resolve only needs to run when the source has been drawn into
   // since the previous resolve with identical parameters. Clears also change the
   // source, so they invalidate the cached key below.
   const uint32_t drawsBeforeResolve = drawsSinceResolve_;
-  const bool fromDepth = (sourceSelect == 4u);
   ResolveKey key{};
   // Mask out post-copy clear bits (8..9) so a copy+clear resolve with 0 intervening draws
   // still matches an immediately preceding copy of the exact same unmodified EDRAM source.
   key.control = control & ~(3u << 8);
   key.destBase = destBase;
   key.destInfo = destInfo;
-  key.surfaceInfo = surfaceInfo;
-  key.tl = tl;
-  key.br = br;
+  key.surfaceInfo = effSurfInfo;
+  key.tl = (x0 & 0x7FFFu) | ((y0 & 0x7FFFu) << 16);
+  key.br = (x1 & 0x7FFFu) | ((y1 & 0x7FFFu) << 16);
   key.depthInfo = fromDepth ? depthInfo : 0u;
   key.frontbufferCandidate = (!fromDepth && width >= 480u && height >= 240u);
   if (!fromDepth) {
     key.colorInfo[0] = colorInfos[sourceSelect < 4u ? sourceSelect : 0u];
   }
-  const bool isCopy = (command != 3u && destBase != 0);
   // Never skip a frontbuffer resolve: SetLastFrontbuffer() and resolved-texture
   // re-creation on guest writes must still run so present cannot show a stale surface.
   const bool skipCopy = isCopy && !key.frontbufferCandidate && drawsSinceResolve_ == 0 &&
@@ -2009,30 +2179,27 @@ bool Gles3Backend::ExecuteResolve(const uint32_t* regs) {
     uint64_t srcDrawGen = 0;
     GLenum dstFmt = GL_RGBA8;
     if (fromDepth) {
-      const auto* dt = resources_.DepthTargetFor(depthInfo, surfaceInfo);
-      if (dt && dt->tex) {
-        srcTex = dt->tex;
-        srcW = dt->width;
-        srcH = dt->height;
-        srcDrawGen = dt->drawGen;
+      if (srcDt && srcDt->tex) {
+        srcTex = srcDt->tex;
+        srcW = srcDt->width;
+        srcH = srcDt->height;
+        srcDrawGen = srcDt->drawGen;
         // Match GL_DEPTH24_STENCIL8 so depth resolves use hardware glCopyImageSubData
         // instead of an FBO switch + fullscreen shader pass (5x/frame).
         dstFmt = GL_DEPTH24_STENCIL8;
       }
     } else {
-      const uint32_t info = colorInfos[sourceSelect < 4u ? sourceSelect : 0u];
-      const auto* ct = resources_.ColorTargetFor(info, surfaceInfo);
-      if (ct && ct->tex) {
-        srcTex = ct->tex;
-        srcW = ct->width;
-        srcH = ct->height;
-        srcDrawGen = ct->drawGen;
-        dstFmt = ct->internalFormat;
+      if (srcCt && srcCt->tex) {
+        srcTex = srcCt->tex;
+        srcW = srcCt->width;
+        srcH = srcCt->height;
+        srcDrawGen = srcCt->drawGen;
+        dstFmt = srcCt->internalFormat;
       }
     }
 
     if (srcTex) {
-      auto* dst = resources_.ResolvedFor(destBase, hostW, hostH, dstFmt, fromDepth);
+      auto* dst = resources_.ResolvedFor(destBase, fullHostW, fullHostH, dstFmt, fromDepth);
       if (dst && dst->tex) {
         const uint32_t curWriteSeq = resources_.CurrentWriteSeq();
         const uint32_t prevGW = dst->guestWidth;
@@ -2041,8 +2208,8 @@ bool Gles3Backend::ExecuteResolve(const uint32_t* regs) {
         const int32_t prevExp = dst->expBias;
         const uint8_t prevClamp = dst->clampMode;
         const uint32_t prevWriteSeq = dst->lastWriteSeq;
-        dst->guestWidth = (dst->width == hostW) ? width : std::max(dst->guestWidth, width);
-        dst->guestHeight = (dst->height == hostH) ? height : std::max(dst->guestHeight, height);
+        dst->guestWidth = (dst->width == fullHostW) ? fullGuestW : std::max(dst->guestWidth, fullGuestW);
+        dst->guestHeight = (dst->height == fullHostH) ? fullGuestH : std::max(dst->guestHeight, fullGuestH);
         dst->rbSwapped = !fromDepth && (((destInfo >> 24) & 1u) != 0);
         dst->lastWriteSeq = curWriteSeq;
         if (!fromDepth && width >= 480 && height >= 240) {
@@ -2064,17 +2231,36 @@ bool Gles3Backend::ExecuteResolve(const uint32_t* regs) {
                                destFmt == 32u || destFmt == 36u || destFmt == 37u || destFmt == 38u;
           clampMode = isFloat ? 0.0f : (destNum == 0u ? 1.0f : (destNum == 1u ? 2.0f : 0.0f));
           clampModeI = isFloat ? 0u : (destNum == 0u ? 1u : (destNum == 1u ? 2u : 0u));
+          // GL_RGBA8 is already hardware-clamped to [0, 1]; no deferred shader clamp needed
+          // when expBias == 0 (avoids corrupting biased [-1, 1] consumers).
+          if (dstFmt == GL_RGBA8 && expBias == 0 && clampModeI == 1u) {
+            clampMode = 0.0f;
+            clampModeI = 0u;
+          }
         }
 
         // Hardware direct texture copy fast path (GLES 3.2 core glCopyImageSubData):
         // skips FBO switch, state invalidation, shader/UBO bind, and full-screen draw!
+        // When resolving an unclamped GL_RGBA16F surface or biased surface to a clamped UNORM/SNORM
+        // format, run ResolveCopyProgram so clamping happens BEFORE bilinear filtering & sampling.
         const int32_t srcX0 = static_cast<int32_t>(std::lround(hostX0));
         const int32_t srcY0 = static_cast<int32_t>(std::lround(hostY0));
         const bool boundsOk = srcX0 >= 0 && srcY0 >= 0 &&
             static_cast<uint32_t>(srcX0) + hostW <= srcW &&
             static_cast<uint32_t>(srcY0) + hostH <= srcH;
 
-        const bool canDirectCopy = boundsOk;
+        const bool needShaderClamp =
+            !fromDepth && clampModeI != 0u && (dstFmt == GL_RGBA16F || expBias != 0);
+        const bool canDirectCopy = boundsOk && !needShaderClamp;
+        if (diagFile_) {
+          std::fprintf(static_cast<FILE*>(diagFile_),
+                       "RESOLVE #%u fromD=%d src=%ux%u(fmt=0x%x) dst=0x%08x dstInfo=0x%08x "
+                       "exp=%d clamp=%u direct=%d clr=%d/%d draws=%u\n",
+                       frameResolves_ + 1u, fromDepth ? 1 : 0, srcW, srcH,
+                       static_cast<unsigned>(dstFmt), destBase, destInfo, expBias, clampModeI,
+                       canDirectCopy ? 1 : 0, colorClear ? 1 : 0, depthClear ? 1 : 0,
+                       drawsBeforeResolve);
+        }
 
         // If this exact (srcTex, srcX0, srcY0, hostW, hostH) was ALREADY copied into dst->tex
         // and srcTex has received zero draws/clears since then (e.g. #49 after 19 bloom draws into
@@ -2128,11 +2314,9 @@ bool Gles3Backend::ExecuteResolve(const uint32_t* regs) {
           const bool isFullRectColorCopy =
               !fromDepth && !colorClear && !depthClear &&
               srcX0 == 0 && srcY0 == 0 && hostW == dst->width && hostH == dst->height;
-          const bool canDeferConsec =
-              isFullRectColorCopy && wasOnly3DMeshDraws &&
-              sameDestResolveStreak_ >= 1u &&
-              destBase == lastResolveDestBase_ &&
-              srcTex == lastColorResolveSrcTex_;
+          // Execute every refraction resolve in command order: deferring consecutive full-rect
+          // HDR resolves causes temporal feedback / rainbow blocks in multi-pass water & glass.
+          const bool canDeferConsec = false;
           if (canDeferConsec) {
             pendingResolve_.valid = true;
             pendingResolve_.srcTex = srcTex;
@@ -2176,7 +2360,7 @@ bool Gles3Backend::ExecuteResolve(const uint32_t* regs) {
             gpuProfLastStampMs_ = tAfterCopy;
             GLESLOG("GPU-PROF: #%02u %s %ux%u(g=%ux%u tl=%u,%u off=0x%x pitch=0x%x) fmt=0x%x base=0x%08x ed=0x%x | draws=%u(rect=%u idx=%u at=%u sk=%u vrs=%u) tex=%u(slow=%u srgb=%u) | drawGpu=%.2fms copyGpu=%.2fms lastPs=%016llx(len=%u)",
                     frameResolves_, fromDepth ? "D" : "C", hostW, hostH, width, height, x0, y0,
-                    regs[0x2316u], regs[0x2314u], dstFmt, destBase,
+                    regs[0x2316u], destPitchReg, dstFmt, destBase,
                     fromDepth ? (depthInfo & 0xFFFu) : (colorInfos[sourceSelect < 4u ? sourceSelect : 0u] & 0xFFFu),
                     gpuProfPassDraws_, gpuProfPassRects_, gpuProfPassIndices_,
                     gpuProfPassAlphaTest_, gpuProfPassShaderKill_, gpuProfPassVrsDraws_,
@@ -2570,6 +2754,13 @@ void Gles3Backend::ExecutePresent(uint32_t fbAddr, uint32_t fbWidth, uint32_t fb
     eglSwapBuffers(display_, surface_);
   }
   g_android_custom_present_count.fetch_add(1, std::memory_order_relaxed);
+  if (diagFile_) {
+    std::fprintf(static_cast<FILE*>(diagFile_), "=== PRESENT fb=0x%08x (%ux%u exp=%d rb=%d) ===\n",
+                 fbAddr, fb->width, fb->height, fb->expBias, fb->rbSwapped ? 1 : 0);
+    std::fclose(static_cast<FILE*>(diagFile_));
+    diagFile_ = nullptr;
+    GLESLOG("BS1-DUMP complete (%u draws written to bs1_frame.txt)", diagDrawIdx_);
+  }
 }
 
 }  // namespace bs1::renderer::gles3
